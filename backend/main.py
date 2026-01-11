@@ -27,7 +27,7 @@ from models.schemas import (
     StatsResponse,
 )
 from services.rate_limiter import rate_limiter, RateLimitError
-from services.cold_service import cold_service
+from services.cold_service import cold_service, sandbox_service
 
 
 # Background cleanup task
@@ -55,7 +55,15 @@ async def lifespan(app: FastAPI):
     cleanup = asyncio.create_task(cleanup_task())
     print("Started cleanup background task")
 
+    # Start warm pool manager (runs in background, doesn't block)
+    print("Starting warm pool manager...")
+    await sandbox_service.start_pool_manager()
+
     yield
+
+    # Shutdown warm pool manager
+    print("Shutting down warm pool manager...")
+    await sandbox_service.shutdown_pool_manager()
 
     # Cleanup on shutdown
     cleanup.cancel()
@@ -233,6 +241,9 @@ async def get_status():
     warm_count = sum(1 for s in active if s.type.value == "warm")
     snapshot_count = sum(1 for s in active if s.type.value == "snapshot")
 
+    # Get pool status
+    pool_status = sandbox_service.get_pool_status()
+
     return StatusResponse(
         active=active,
         active_counts=ActiveSandboxes(
@@ -242,9 +253,9 @@ async def get_status():
             total=len(active),
         ),
         pool=PoolStatus(
-            ready=0,  # TODO: from warm pool service
-            creating=0,
-            in_use=warm_count,
+            ready=pool_status.get("ready", 0),
+            creating=pool_status.get("creating", 0),
+            in_use=pool_status.get("in_use", warm_count),
         ),
         rate=RateStatus(
             used=rate_status["rate"]["used"],
@@ -281,6 +292,21 @@ async def get_stats():
 async def get_limits():
     """Get current rate limit status."""
     return await rate_limiter.get_status()
+
+
+@app.get("/api/orchestrator/logs")
+async def get_orchestrator_logs(limit: int = Query(default=50, ge=1, le=100)):
+    """Get recent orchestrator logs for UI transparency."""
+    return {
+        "logs": sandbox_service.get_orchestrator_logs(limit),
+        "count": len(sandbox_service.get_orchestrator_logs(limit)),
+    }
+
+
+@app.get("/api/pool/status")
+async def get_pool_status():
+    """Get warm pool status."""
+    return sandbox_service.get_pool_status()
 
 
 if __name__ == "__main__":

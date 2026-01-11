@@ -1,4 +1,4 @@
-"""Cold sandbox service using do-app-sandbox SDK."""
+"""Cold and warm sandbox service using do-app-sandbox SDK."""
 import asyncio
 import logging
 import random
@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import AsyncGenerator, Optional
 from uuid import UUID, uuid4
 
-from do_app_sandbox import Sandbox, SpacesConfig, SandboxMode
+from do_app_sandbox import Sandbox, SpacesConfig, SandboxMode, SandboxManager, PoolConfig
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -143,12 +143,133 @@ class SandboxRuntime:
         )
 
 
-class ColdSandboxService:
-    """Service for managing cold sandboxes."""
+class SandboxService:
+    """Service for managing cold and warm sandboxes with pool pre-warming."""
 
     def __init__(self):
         self._active_sandboxes: dict[str, SandboxRuntime] = {}
         self._event_queues: dict[str, asyncio.Queue] = {}
+        # Pool manager for warm sandboxes
+        self._pool_manager: Optional[SandboxManager] = None
+        self._pool_started = False
+        # Orchestrator log for UI transparency (recent events)
+        self._orchestrator_logs: list[dict] = []
+        self._max_orchestrator_logs = 100
+
+    def _log_orchestrator(self, message: str, level: str = "info"):
+        """Add a message to the orchestrator log."""
+        log_entry = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "level": level,
+            "message": message,
+        }
+        self._orchestrator_logs.append(log_entry)
+        # Keep only recent logs
+        if len(self._orchestrator_logs) > self._max_orchestrator_logs:
+            self._orchestrator_logs = self._orchestrator_logs[-self._max_orchestrator_logs:]
+        logger.log(getattr(logging, level.upper(), logging.INFO), f"[ORCHESTRATOR] {message}")
+
+    def get_orchestrator_logs(self, limit: int = 50) -> list[dict]:
+        """Get recent orchestrator logs."""
+        return self._orchestrator_logs[-limit:]
+
+    async def start_pool_manager(self):
+        """Initialize and start the warm pool manager."""
+        if self._pool_started:
+            return
+
+        self._log_orchestrator("Initializing warm pool manager...")
+
+        try:
+            # Create pool manager with python and node pools
+            self._pool_manager = SandboxManager(
+                pools={
+                    "python": PoolConfig(
+                        target_ready=config.MAX_CONCURRENT_WARM,  # Keep warm pool filled
+                        max_ready=config.MAX_CONCURRENT_WARM + 2,  # Buffer
+                        idle_timeout=300,  # 5 min before scale-down
+                        cooldown_after_acquire=60,  # Pause scale-down after acquire
+                        on_empty="create",  # Fall back to cold start if pool empty
+                    ),
+                    "node": PoolConfig(
+                        target_ready=1,  # Keep at least one node sandbox warm
+                        max_ready=config.MAX_CONCURRENT_WARM,
+                        idle_timeout=300,
+                        cooldown_after_acquire=60,
+                        on_empty="create",
+                    ),
+                },
+                sandbox_defaults={
+                    "region": "nyc",
+                    "api_token": config.DIGITALOCEAN_TOKEN,
+                    "mode": SandboxMode.SERVICE,
+                },
+            )
+
+            await self._pool_manager.start()
+            self._log_orchestrator(f"Warm pool manager started, warming up {config.MAX_CONCURRENT_WARM} python + 1 node sandboxes...")
+
+            # Warm up in background (don't block startup)
+            asyncio.create_task(self._warm_up_pool())
+
+            self._pool_started = True
+        except Exception as e:
+            self._log_orchestrator(f"Failed to start pool manager: {e}", level="error")
+
+    async def _warm_up_pool(self):
+        """Background task to warm up the pool."""
+        try:
+            await self._pool_manager.warm_up(timeout=300)  # 5 min timeout
+            metrics = self._pool_manager.metrics()
+            python_ready = metrics.get("python", {}).get("ready", 0) if isinstance(metrics.get("python"), dict) else 0
+            node_ready = metrics.get("node", {}).get("ready", 0) if isinstance(metrics.get("node"), dict) else 0
+            self._log_orchestrator(f"Warm pool ready: {python_ready} python, {node_ready} node sandboxes")
+        except Exception as e:
+            self._log_orchestrator(f"Pool warm-up failed or timed out: {e}", level="warning")
+
+    async def shutdown_pool_manager(self):
+        """Shutdown the pool manager."""
+        if self._pool_manager:
+            self._log_orchestrator("Shutting down warm pool manager...")
+            try:
+                await self._pool_manager.shutdown()
+            except Exception as e:
+                self._log_orchestrator(f"Pool shutdown error: {e}", level="error")
+            self._pool_started = False
+
+    def get_pool_status(self) -> dict:
+        """Get current warm pool status."""
+        if not self._pool_manager:
+            return {"ready": 0, "creating": 0, "in_use": 0, "pool_started": False}
+
+        try:
+            metrics = self._pool_manager.metrics()
+            # Handle both dict and object metrics
+            python_metrics = metrics.get("python", {})
+            node_metrics = metrics.get("node", {})
+
+            if hasattr(python_metrics, 'ready'):
+                python_ready = python_metrics.ready
+                python_creating = python_metrics.creating
+                node_ready = node_metrics.ready if node_metrics else 0
+                node_creating = node_metrics.creating if node_metrics else 0
+            else:
+                python_ready = python_metrics.get("ready", 0)
+                python_creating = python_metrics.get("creating", 0)
+                node_ready = node_metrics.get("ready", 0)
+                node_creating = node_metrics.get("creating", 0)
+
+            return {
+                "ready": python_ready + node_ready,
+                "creating": python_creating + node_creating,
+                "in_use": sum(1 for r in self._active_sandboxes.values() if r.sandbox_type == SandboxType.WARM),
+                "pool_started": self._pool_started,
+                "python": {"ready": python_ready, "creating": python_creating},
+                "node": {"ready": node_ready, "creating": node_creating},
+            }
+        except Exception as e:
+            logger.warning(f"Failed to get pool metrics: {e}")
+            return {"ready": 0, "creating": 0, "in_use": 0, "pool_started": self._pool_started, "error": str(e)}
 
     def _get_spaces_config(self) -> Optional[SpacesConfig]:
         """Get Spaces configuration if available."""
@@ -178,10 +299,20 @@ class ColdSandboxService:
         type_str = "cold" if sandbox_type == SandboxType.COLD else "warm"
         can_launch, error = await rate_limiter.can_launch(type_str)
         if not can_launch:
+            self._log_orchestrator(f"Rate limit exceeded for {type_str} launch: {error}", level="warning")
             raise RateLimitError(error)
 
         # Generate run ID
         run_id = uuid4()
+
+        # Log to orchestrator
+        snapshot_text = "with snapshot" if use_snapshot else "from GitHub"
+        self._log_orchestrator(f"Launch request: {type_str} sandbox for {game.value} {snapshot_text}")
+
+        # Get pool status for warm launches
+        if sandbox_type == SandboxType.WARM:
+            pool_status = self.get_pool_status()
+            self._log_orchestrator(f"Pool status: {pool_status['ready']} ready, {pool_status['creating']} creating")
 
         # Create runtime tracker
         runtime = SandboxRuntime(
@@ -209,27 +340,64 @@ class ColdSandboxService:
         total_start_time = time.time()
 
         logger.info(f"Starting sandbox creation for run_id={runtime.run_id}, game={runtime.game}")
+        self._log_orchestrator(f"Starting {runtime.sandbox_type.value} sandbox for {runtime.game.value}")
 
         try:
             game_config = GAME_CONFIG[runtime.game]
 
             # Step 1: Create/acquire sandbox
-            logger.info(f"Step 1: Creating {runtime.sandbox_type.value} sandbox...")
-            await self._emit(queue, runtime.add_log(f"Creating {runtime.sandbox_type.value} sandbox..."))
-            await self._emit(queue, StatusEvent(run_id=runtime.run_id, status=SandboxStatus.CREATING))
+            if runtime.sandbox_type == SandboxType.WARM and self._pool_manager and self._pool_started:
+                # Use warm pool - instant acquisition
+                logger.info(f"Step 1: Acquiring from warm pool...")
+                await self._emit(queue, runtime.add_log("Acquiring sandbox from warm pool..."))
+                await self._emit(queue, StatusEvent(run_id=runtime.run_id, status=SandboxStatus.CREATING))
+                self._log_orchestrator(f"Acquiring {game_config['image']} sandbox from warm pool")
 
-            bootstrap_start = time.time()
+                bootstrap_start = time.time()
 
-            logger.info(f"Calling Sandbox.create() with image={game_config['image']}, mode=SERVICE")
-            sandbox = Sandbox.create(
-                image=game_config["image"],
-                api_token=config.DIGITALOCEAN_TOKEN,
-                spaces_config=self._get_spaces_config(),
-                mode=SandboxMode.SERVICE,  # Use HTTP API instead of doctl console
-                wait_ready=True,
-                timeout=120,
-            )
-            logger.info(f"Sandbox created successfully: app_id={sandbox.app_id}")
+                try:
+                    # Acquire from pool (should be instant if pool is warm)
+                    sandbox = await self._pool_manager.acquire(image=game_config["image"])
+                    bootstrap_ms = int((time.time() - bootstrap_start) * 1000)
+                    self._log_orchestrator(f"Pool acquisition: {bootstrap_ms}ms (pool hit)")
+                except Exception as pool_error:
+                    # Pool empty or error - fall back to cold start
+                    logger.warning(f"Pool acquisition failed: {pool_error}, falling back to cold start")
+                    self._log_orchestrator(f"Pool miss: falling back to cold start", level="warning")
+                    await self._emit(queue, runtime.add_log("Pool empty, falling back to cold start..."))
+
+                    sandbox = Sandbox.create(
+                        image=game_config["image"],
+                        api_token=config.DIGITALOCEAN_TOKEN,
+                        spaces_config=self._get_spaces_config(),
+                        mode=SandboxMode.SERVICE,
+                        wait_ready=True,
+                        timeout=120,
+                    )
+                    bootstrap_ms = int((time.time() - bootstrap_start) * 1000)
+                    self._log_orchestrator(f"Cold fallback complete: {bootstrap_ms}ms")
+
+                logger.info(f"Sandbox acquired: app_id={sandbox.app_id}")
+            else:
+                # Cold start - create new sandbox
+                logger.info(f"Step 1: Creating cold sandbox...")
+                await self._emit(queue, runtime.add_log("Creating cold sandbox..."))
+                await self._emit(queue, StatusEvent(run_id=runtime.run_id, status=SandboxStatus.CREATING))
+                self._log_orchestrator(f"Creating cold {game_config['image']} sandbox")
+
+                bootstrap_start = time.time()
+
+                logger.info(f"Calling Sandbox.create() with image={game_config['image']}, mode=SERVICE")
+                sandbox = Sandbox.create(
+                    image=game_config["image"],
+                    api_token=config.DIGITALOCEAN_TOKEN,
+                    spaces_config=self._get_spaces_config(),
+                    mode=SandboxMode.SERVICE,
+                    wait_ready=True,
+                    timeout=120,
+                )
+                logger.info(f"Sandbox created successfully: app_id={sandbox.app_id}")
+                self._log_orchestrator(f"Cold sandbox created: {sandbox.app_id}")
 
             bootstrap_ms = int((time.time() - bootstrap_start) * 1000)
             runtime.bootstrap_ms = bootstrap_ms
@@ -242,6 +410,7 @@ class ColdSandboxService:
 
             await self._emit(queue, runtime.add_log(f"Sandbox ready in {bootstrap_ms}ms"))
             await self._emit(queue, runtime.add_log(f"App ID: {sandbox.app_id}"))
+            self._log_orchestrator(f"Sandbox {sandbox.app_id} ready in {bootstrap_ms}ms")
 
             # Wait for DNS propagation before trying to connect
             await self._emit(queue, runtime.add_log(f"Waiting {DNS_PROPAGATION_DELAY}s for DNS propagation..."))
@@ -251,15 +420,19 @@ class ColdSandboxService:
             restore_start = time.time()
 
             if runtime.use_snapshot:
+                self._log_orchestrator(f"Deploying {runtime.game.value} from snapshot")
                 await self._deploy_with_snapshot(runtime, queue, game_config)
             else:
+                self._log_orchestrator(f"Deploying {runtime.game.value} from GitHub")
                 await self._deploy_from_github(runtime, queue, game_config)
 
             restore_ms = int((time.time() - restore_start) * 1000)
             runtime.restore_ms = restore_ms
+            self._log_orchestrator(f"Game deployed in {restore_ms}ms")
 
             # Step 3: Start the game (use service client's exec_background in SERVICE mode)
             await self._emit(queue, runtime.add_log(f"Starting {runtime.game.value} game..."))
+            self._log_orchestrator(f"Starting {runtime.game.value} game process")
             run_cmd = f"cd /workspace/{game_config['path']} && {game_config['run']}"
             # SERVICE mode: use exec_background via HTTP client
             if sandbox.mode == SandboxMode.SERVICE:
@@ -302,9 +475,15 @@ class ColdSandboxService:
             await self._emit(queue, runtime.add_log(f"Game live at: {ingress_url}"))
             await self._emit(queue, runtime.add_log(f"Total time: {total_ms}ms"))
             await self._emit(queue, runtime.add_log(f"Auto-cleanup in {lifetime_minutes} minutes"))
+            self._log_orchestrator(f"READY: {runtime.game.value} sandbox in {total_ms}ms (bootstrap: {bootstrap_ms}ms, deploy: {restore_ms}ms)")
+
+            # Log pool replenishment for warm sandboxes
+            if runtime.sandbox_type == SandboxType.WARM and self._pool_manager:
+                self._log_orchestrator(f"Pool replenishment triggered (target: {config.MAX_CONCURRENT_WARM})")
 
         except Exception as e:
             logger.error(f"Sandbox creation failed for run_id={runtime.run_id}: {str(e)}", exc_info=True)
+            self._log_orchestrator(f"FAILED: {runtime.game.value} sandbox - {str(e)}", level="error")
             runtime.status = SandboxStatus.FAILED
             await self._emit(queue, runtime.add_log(f"ERROR: {str(e)}"))
             await self._emit(queue, StatusEvent(run_id=runtime.run_id, status=SandboxStatus.FAILED))
@@ -464,5 +643,6 @@ class ColdSandboxService:
         return len(expired)
 
 
-# Global service instance
-cold_service = ColdSandboxService()
+# Global service instance (renamed from cold_service for backwards compatibility)
+sandbox_service = SandboxService()
+cold_service = sandbox_service  # Alias for backwards compatibility

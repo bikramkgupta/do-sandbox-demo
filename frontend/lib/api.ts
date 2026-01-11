@@ -61,3 +61,35 @@ export async function getLimits(): Promise<{
 export function createEventSource(runId: string): EventSource {
   return new EventSource(`${API_BASE}/api/stream/${runId}`);
 }
+
+export interface OrchestratorLog {
+  timestamp: string;
+  level: string;
+  message: string;
+}
+
+export async function getOrchestratorLogs(limit: number = 50): Promise<{
+  logs: OrchestratorLog[];
+  count: number;
+}> {
+  const response = await fetch(`${API_BASE}/api/orchestrator/logs?limit=${limit}`);
+  if (!response.ok) {
+    throw new Error('Failed to fetch orchestrator logs');
+  }
+  return response.json();
+}
+
+export async function getPoolStatus(): Promise<{
+  ready: number;
+  creating: number;
+  in_use: number;
+  pool_started: boolean;
+  python?: { ready: number; creating: number };
+  node?: { ready: number; creating: number };
+}> {
+  const response = await fetch(`${API_BASE}/api/pool/status`);
+  if (!response.ok) {
+    throw new Error('Failed to fetch pool status');
+  }
+  return response.json();
+}

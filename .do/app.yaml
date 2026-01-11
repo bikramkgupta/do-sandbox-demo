@@ -12,7 +12,7 @@ services:
     dockerfile_path: backend/Dockerfile
     http_port: 8000
     instance_count: 1
-    instance_size_slug: apps-s-1vcpu-1gb
+    instance_size_slug: professional-s
     routes:
       - path: /api
         preserve_path_prefix: true
@@ -60,7 +60,7 @@ services:
     run_command: npm start
     http_port: 3000
     instance_count: 1
-    instance_size_slug: apps-s-1vcpu-1gb
+    instance_size_slug: professional-s
     routes:
       - path: /
     envs:
