@@ -205,35 +205,30 @@ class SandboxService:
             idle_timeout = config.WARM_POOL_IDLE_TIMEOUT  # Default: 120 (2 min)
             max_concurrent_creates = config.WARM_POOL_MAX_CONCURRENT_CREATES  # Default: 2
 
+            # CRITICAL FIX: Simplified pool configuration to prevent churn
+            # - Only Python pool (Node games will cold-start)
+            # - max_ready close to target_ready to prevent over-provisioning
+            # - Reduced max_total_sandboxes to limit runaway creation
+            # - max_concurrent_creates=1 to serialize sandbox creation
             self._pool_manager = SandboxManager(
                 pools={
-                    # Python pool for Python-based games (snake, memory)
+                    # Python pool only - for snake and memory games
+                    # Tic-tac-toe (Node) will fall back to cold start
                     "python": PoolConfig(
                         target_ready=target_ready,
-                        max_ready=max_ready,
-                        idle_timeout=idle_timeout,
-                        scale_down_delay=60,  # Destroy one sandbox every 60s during scale-down
-                        cooldown_after_acquire=120,  # Pause scale-down for 2 min after acquire
-                        max_warm_age=1800,  # Cycle sandboxes after 30 min for freshness
+                        max_ready=target_ready + 1,  # Only 1 above target to prevent over-provisioning
+                        idle_timeout=600,  # 10 min idle before scale-down (was 120s causing churn)
+                        scale_down_delay=120,  # Slow scale-down: 1 sandbox every 2 min
+                        cooldown_after_acquire=300,  # Pause scale-down for 5 min after acquire
+                        max_warm_age=3600,  # Cycle sandboxes after 1 hour (was 30 min)
                         on_empty="create",  # Fallback to cold start if pool empty
                         create_retries=2,
                         create_retry_delay=10,
                     ),
-                    # Node pool for JS-based games (tic-tac-toe)
-                    "node": PoolConfig(
-                        target_ready=1,
-                        max_ready=3,
-                        idle_timeout=idle_timeout,
-                        scale_down_delay=60,
-                        cooldown_after_acquire=120,
-                        max_warm_age=1800,
-                        on_empty="create",
-                        create_retries=2,
-                        create_retry_delay=10,
-                    ),
+                    # Node pool REMOVED - tic-tac-toe will use cold start
                 },
-                max_total_sandboxes=max_ready + 3,  # Global limit across all pools
-                max_concurrent_creates=max_concurrent_creates,  # Limit parallel creations (prevents over-provisioning)
+                max_total_sandboxes=target_ready + 3,  # Strict limit: target + small buffer
+                max_concurrent_creates=1,  # CRITICAL: Only 1 sandbox creation at a time
                 sandbox_defaults={
                     "region": "syd",
                     "api_token": config.DIGITALOCEAN_TOKEN,
@@ -243,13 +238,14 @@ class SandboxService:
 
             await self._pool_manager.start()
             self._log_orchestrator(
-                f"Warm pool started: target={target_ready}, max={max_ready}, "
-                f"max_creates={max_concurrent_creates}, idle_timeout={idle_timeout}s"
+                f"Warm pool started: target={target_ready}, max={target_ready + 1}, "
+                f"max_creates=1, idle_timeout=600s (Python only, Node will cold-start)"
             )
 
-            # Warm up in background with short timeout
-            # This pre-warms the pool without blocking startup
-            asyncio.create_task(self._warm_up_pool())
+            # IMPORTANT: Do NOT call warm_up() proactively
+            # Let pool start idle (0 sandboxes) and scale to target_ready on first acquire
+            # This prevents the churn issue where sandboxes are created before any user demand
+            self._log_orchestrator("Pool starting idle - will scale on first user request")
 
             self._pool_started = True
         except Exception as e:
@@ -286,34 +282,29 @@ class SandboxService:
             self._pool_started = False
 
     def get_pool_status(self) -> dict:
-        """Get current warm pool status."""
+        """Get current warm pool status (Python pool only)."""
         if not self._pool_manager:
             return {"ready": 0, "creating": 0, "in_use": 0, "pool_started": False}
 
         try:
             metrics = self._pool_manager.metrics()
-            # Handle both dict and object metrics
+            # Handle both dict and object metrics - Python pool only
             python_metrics = metrics.get("python", {})
-            node_metrics = metrics.get("node", {})
 
             if hasattr(python_metrics, 'ready'):
                 python_ready = python_metrics.ready
                 python_creating = python_metrics.creating
-                node_ready = node_metrics.ready if node_metrics else 0
-                node_creating = node_metrics.creating if node_metrics else 0
             else:
                 python_ready = python_metrics.get("ready", 0)
                 python_creating = python_metrics.get("creating", 0)
-                node_ready = node_metrics.get("ready", 0)
-                node_creating = node_metrics.get("creating", 0)
 
             return {
-                "ready": python_ready + node_ready,
-                "creating": python_creating + node_creating,
+                "ready": python_ready,
+                "creating": python_creating,
                 "in_use": sum(1 for r in self._active_sandboxes.values() if r.sandbox_type == SandboxType.WARM),
                 "pool_started": self._pool_started,
                 "python": {"ready": python_ready, "creating": python_creating},
-                "node": {"ready": node_ready, "creating": node_creating},
+                # Node pool removed - tic-tac-toe uses cold start
             }
         except Exception as e:
             logger.warning(f"Failed to get pool metrics: {e}")

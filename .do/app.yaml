@@ -48,7 +48,8 @@ services:
       - key: MAX_RUNS_PER_HOUR
         scope: RUN_TIME
         value: "25"
-      # Warm pool settings (based on SDK docs)
+      # Warm pool settings - CRITICAL: Keep values low to prevent churn
+      # Pool starts idle and scales to target_ready on first user request
       - key: WARM_POOL_ENABLED
         scope: RUN_TIME
         value: "true"
@@ -57,13 +58,13 @@ services:
         value: "2"
       - key: WARM_POOL_MAX_READY
         scope: RUN_TIME
-        value: "10"
+        value: "3"
       - key: WARM_POOL_IDLE_TIMEOUT
         scope: RUN_TIME
-        value: "120"
+        value: "600"
       - key: WARM_POOL_MAX_CONCURRENT_CREATES
         scope: RUN_TIME
-        value: "2"
+        value: "1"
 
   # Next.js Frontend
   - name: frontend
