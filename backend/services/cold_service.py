@@ -56,28 +56,34 @@ def exec_with_retry(sandbox, command: str, timeout: int = 120, max_retries: int 
             raise
     raise last_error
 
+# Game port - use 5000 to avoid conflict with sandbox API server on 8080
+GAME_PORT = 5000
+
 # Game configurations
 GAME_CONFIG = {
     GameType.SNAKE: {
         "image": "python",
         "path": "snake",
         "install": "pip install -r requirements.txt",
-        "run": "python app.py",
+        "run": f"sed -i 's/port=8080/port={GAME_PORT}/' app.py && python app.py",
         "snapshot_id": "snake-python",
+        "port": GAME_PORT,
     },
     GameType.TIC_TAC_TOE: {
         "image": "node",
         "path": "tic-tac-toe",
         "install": "npm install",
-        "run": "npm start",
+        "run": f"PORT={GAME_PORT} npm start",
         "snapshot_id": "tictactoe-node",
+        "port": GAME_PORT,
     },
     GameType.MEMORY: {
         "image": "python",
         "path": "memory",
         "install": "pip install -r requirements.txt",
-        "run": "python app.py",
+        "run": f"sed -i 's/port=8080/port={GAME_PORT}/' app.py && python app.py",
         "snapshot_id": "memory-python",
+        "port": GAME_PORT,
     },
 }
 
@@ -255,8 +261,13 @@ class ColdSandboxService:
             else:
                 sandbox.launch_process(run_cmd)
 
-            # Get the URL
-            ingress_url = sandbox.get_url()
+            # Get the URL (use proxy endpoint for SERVICE mode)
+            base_url = sandbox.get_url()
+            game_port = game_config.get("port", GAME_PORT)
+            if sandbox.mode == SandboxMode.SERVICE:
+                ingress_url = f"{base_url}/proxy/{game_port}"
+            else:
+                ingress_url = base_url
             runtime.ingress_url = ingress_url
 
             # Set expiry
