@@ -1,5 +1,6 @@
 """Cold sandbox service using do-app-sandbox SDK."""
 import asyncio
+import logging
 import random
 import time
 from datetime import datetime, timedelta
@@ -7,6 +8,10 @@ from typing import AsyncGenerator, Optional
 from uuid import UUID, uuid4
 
 from do_app_sandbox import Sandbox, SpacesConfig
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 from config import config
 from models.schemas import (
@@ -166,15 +171,19 @@ class ColdSandboxService:
         queue = self._event_queues.get(str(runtime.run_id))
         total_start_time = time.time()
 
+        logger.info(f"Starting sandbox creation for run_id={runtime.run_id}, game={runtime.game}")
+
         try:
             game_config = GAME_CONFIG[runtime.game]
 
             # Step 1: Create/acquire sandbox
+            logger.info(f"Step 1: Creating {runtime.sandbox_type.value} sandbox...")
             await self._emit(queue, runtime.add_log(f"Creating {runtime.sandbox_type.value} sandbox..."))
             await self._emit(queue, StatusEvent(run_id=runtime.run_id, status=SandboxStatus.CREATING))
 
             bootstrap_start = time.time()
 
+            logger.info(f"Calling Sandbox.create() with image={game_config['image']}")
             sandbox = Sandbox.create(
                 image=game_config["image"],
                 api_token=config.DIGITALOCEAN_TOKEN,
@@ -182,6 +191,7 @@ class ColdSandboxService:
                 wait_ready=True,
                 timeout=120,
             )
+            logger.info(f"Sandbox created successfully: app_id={sandbox.app_id}")
 
             bootstrap_ms = int((time.time() - bootstrap_start) * 1000)
             runtime.bootstrap_ms = bootstrap_ms
@@ -236,6 +246,7 @@ class ColdSandboxService:
             await self._emit(queue, runtime.add_log(f"Auto-cleanup in {lifetime_minutes} minutes"))
 
         except Exception as e:
+            logger.error(f"Sandbox creation failed for run_id={runtime.run_id}: {str(e)}", exc_info=True)
             runtime.status = SandboxStatus.FAILED
             await self._emit(queue, runtime.add_log(f"ERROR: {str(e)}"))
             await self._emit(queue, StatusEvent(run_id=runtime.run_id, status=SandboxStatus.FAILED))
