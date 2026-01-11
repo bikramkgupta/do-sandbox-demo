@@ -2,10 +2,16 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies including doctl (required by do-app-sandbox SDK)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    wget \
+    git \
     && rm -rf /var/lib/apt/lists/*
+
+# Install doctl (DigitalOcean CLI) - required for sandbox operations
+RUN curl -sL https://github.com/digitalocean/doctl/releases/download/v1.104.0/doctl-1.104.0-linux-amd64.tar.gz | tar -xzv \
+    && mv doctl /usr/local/bin/
 
 # Copy requirements first for caching
 COPY requirements.txt .
