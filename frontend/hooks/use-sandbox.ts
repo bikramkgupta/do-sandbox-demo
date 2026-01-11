@@ -5,9 +5,12 @@ import { launchSandbox, deleteSandbox, getStatus } from '@/lib/api';
 import { SandboxType, GameType, SandboxInfo, StatusResponse, SSEEvent } from '@/lib/types';
 import { useSSE } from './use-sse';
 
-// SSE must connect directly to backend, not through Next.js proxy
+// SSE connection URL:
+// - In production (App Platform): use empty string for relative URLs (routing handles it)
+// - In local dev: use NEXT_PUBLIC_API_URL or fallback to localhost:8000
 const SSE_BASE = typeof window !== 'undefined'
-  ? (process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`)
+  ? (process.env.NEXT_PUBLIC_API_URL ||
+     (window.location.hostname === 'localhost' ? 'http://localhost:8000' : ''))
   : '';
 
 interface LaunchState {
