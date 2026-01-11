@@ -30,20 +30,16 @@ from services.rate_limiter import rate_limiter, RateLimitError
 from services.cold_service import cold_service, sandbox_service
 
 
-# Background cleanup task - DISABLED FOR DEBUGGING
-# To isolate whether cleanup is causing pool churn
+# Background cleanup task - only affects user-launched sandboxes, not SDK pool
 async def cleanup_task():
-    """Periodically clean up expired sandboxes - DISABLED FOR DEBUGGING."""
-    print("WARNING: Auto-cleanup is DISABLED - sandboxes must be deleted manually")
+    """Periodically clean up expired sandboxes."""
     while True:
-        # DISABLED: Do not auto-delete sandboxes
-        # This helps isolate whether the SDK or our cleanup is causing churn
-        # try:
-        #     count = await cold_service.cleanup_expired()
-        #     if count > 0:
-        #         print(f"Cleaned up {count} expired sandboxes")
-        # except Exception as e:
-        #     print(f"Cleanup error: {e}")
+        try:
+            count = await cold_service.cleanup_expired()
+            if count > 0:
+                print(f"Cleaned up {count} expired sandboxes")
+        except Exception as e:
+            print(f"Cleanup error: {e}")
         await asyncio.sleep(config.CLEANUP_INTERVAL_SECONDS)
 
 

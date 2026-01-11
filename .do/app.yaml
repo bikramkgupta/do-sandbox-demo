@@ -48,11 +48,12 @@ services:
       - key: MAX_RUNS_PER_HOUR
         scope: RUN_TIME
         value: "25"
-      # Warm pool settings - CRITICAL: Keep values low to prevent churn
-      # Pool starts idle and scales to target_ready on first user request
+      # Warm pool settings - DISABLED due to SDK bug causing infinite sandbox creation
+      # SDK's SandboxManager doesn't respect max_ready limit and keeps creating sandboxes
+      # Re-enable once SDK is fixed
       - key: WARM_POOL_ENABLED
         scope: RUN_TIME
-        value: "true"
+        value: "false"
       - key: WARM_POOL_TARGET_READY
         scope: RUN_TIME
         value: "2"
