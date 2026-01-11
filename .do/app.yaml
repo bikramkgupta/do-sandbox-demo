@@ -1,4 +1,4 @@
-name: sandbox-demo
+name: orchestrator-demo
 region: syd1
 
 services:
@@ -12,7 +12,7 @@ services:
     dockerfile_path: backend/Dockerfile
     http_port: 8000
     instance_count: 1
-    instance_size_slug: professional-s
+    instance_size_slug: apps-d-2vcpu-4gb
     routes:
       - path: /api
         preserve_path_prefix: true
@@ -35,6 +35,7 @@ services:
       - key: SPACES_SECRET_KEY
         scope: RUN_TIME
         type: SECRET
+      # Rate limiting - orchestrator guardrails
       - key: MAX_CONCURRENT_COLD
         scope: RUN_TIME
         value: "2"
@@ -47,6 +48,7 @@ services:
       - key: MAX_RUNS_PER_HOUR
         scope: RUN_TIME
         value: "25"
+      # Warm pool settings (based on SDK docs)
       - key: WARM_POOL_ENABLED
         scope: RUN_TIME
         value: "true"
@@ -59,6 +61,9 @@ services:
       - key: WARM_POOL_IDLE_TIMEOUT
         scope: RUN_TIME
         value: "120"
+      - key: WARM_POOL_MAX_CONCURRENT_CREATES
+        scope: RUN_TIME
+        value: "2"
 
   # Next.js Frontend
   - name: frontend
@@ -72,7 +77,7 @@ services:
     run_command: npm start
     http_port: 3000
     instance_count: 1
-    instance_size_slug: professional-s
+    instance_size_slug: apps-d-2vcpu-4gb
     routes:
       - path: /
     envs:

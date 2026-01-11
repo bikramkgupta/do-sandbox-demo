@@ -174,7 +174,20 @@ class SandboxService:
         return self._orchestrator_logs[-limit:]
 
     async def start_pool_manager(self):
-        """Initialize and start the warm pool manager."""
+        """Initialize and start the warm pool manager.
+
+        Based on SDK docs (sandbox_manager.md):
+        - target_ready: Desired count of ready sandboxes when active
+        - max_ready: Upper limit for warming capacity (hard ceiling)
+        - max_concurrent_creates: Limits parallel sandbox creations
+        - idle_timeout: Seconds before scaling down begins
+        - on_empty: "create" falls back to cold start, "fail" raises PoolExhaustedError
+
+        Pool behavior:
+        - Starts idle (0 warm) unless warm_up() is called
+        - Scales to target_ready on first acquire, then maintains that level
+        - Scales down after idle_timeout of no acquires
+        """
         if self._pool_started:
             return
 
@@ -186,35 +199,41 @@ class SandboxService:
         self._log_orchestrator("Initializing warm pool manager...")
 
         try:
-            # Create pool manager with python and node pools
-            # Configuration based on SDK documentation
+            # Configuration from environment (with sensible defaults)
             target_ready = config.WARM_POOL_TARGET_READY  # Default: 2
             max_ready = config.WARM_POOL_MAX_READY  # Default: 10
             idle_timeout = config.WARM_POOL_IDLE_TIMEOUT  # Default: 120 (2 min)
-            max_concurrent_creates = config.WARM_POOL_MAX_CONCURRENT_CREATES  # Default: 3
+            max_concurrent_creates = config.WARM_POOL_MAX_CONCURRENT_CREATES  # Default: 2
 
             self._pool_manager = SandboxManager(
                 pools={
+                    # Python pool for Python-based games (snake, memory)
                     "python": PoolConfig(
                         target_ready=target_ready,
                         max_ready=max_ready,
                         idle_timeout=idle_timeout,
+                        scale_down_delay=60,  # Destroy one sandbox every 60s during scale-down
                         cooldown_after_acquire=120,  # Pause scale-down for 2 min after acquire
+                        max_warm_age=1800,  # Cycle sandboxes after 30 min for freshness
                         on_empty="create",  # Fallback to cold start if pool empty
                         create_retries=2,
-                        create_retry_delay=5,
+                        create_retry_delay=10,
                     ),
+                    # Node pool for JS-based games (tic-tac-toe)
                     "node": PoolConfig(
                         target_ready=1,
                         max_ready=3,
                         idle_timeout=idle_timeout,
+                        scale_down_delay=60,
                         cooldown_after_acquire=120,
+                        max_warm_age=1800,
                         on_empty="create",
                         create_retries=2,
-                        create_retry_delay=5,
+                        create_retry_delay=10,
                     ),
                 },
-                max_concurrent_creates=max_concurrent_creates,  # Limit parallel creations
+                max_total_sandboxes=max_ready + 3,  # Global limit across all pools
+                max_concurrent_creates=max_concurrent_creates,  # Limit parallel creations (prevents over-provisioning)
                 sandbox_defaults={
                     "region": "syd",
                     "api_token": config.DIGITALOCEAN_TOKEN,
@@ -223,25 +242,38 @@ class SandboxService:
             )
 
             await self._pool_manager.start()
-            self._log_orchestrator(f"Warm pool started (target={target_ready}, max={max_ready}, idle_timeout={idle_timeout}s, max_creates={max_concurrent_creates})")
+            self._log_orchestrator(
+                f"Warm pool started: target={target_ready}, max={max_ready}, "
+                f"max_creates={max_concurrent_creates}, idle_timeout={idle_timeout}s"
+            )
 
-            # Warm up in background (don't block startup)
+            # Warm up in background with short timeout
+            # This pre-warms the pool without blocking startup
             asyncio.create_task(self._warm_up_pool())
 
             self._pool_started = True
         except Exception as e:
             self._log_orchestrator(f"Failed to start pool manager: {e}", level="error")
+            logger.error(f"Pool manager start failed: {e}", exc_info=True)
 
     async def _warm_up_pool(self):
-        """Background task to warm up the pool."""
+        """Background task to warm up the pool.
+
+        Uses a 60s timeout - if pool isn't ready by then, continue anyway.
+        Pool will continue warming in background and be ready for future requests.
+        """
         try:
-            await self._pool_manager.warm_up(timeout=300)  # 5 min timeout
+            self._log_orchestrator("Warming up pool (60s timeout)...")
+            await self._pool_manager.warm_up(timeout=60)
             metrics = self._pool_manager.metrics()
             python_ready = metrics.get("python", {}).get("ready", 0) if isinstance(metrics.get("python"), dict) else 0
             node_ready = metrics.get("node", {}).get("ready", 0) if isinstance(metrics.get("node"), dict) else 0
             self._log_orchestrator(f"Warm pool ready: {python_ready} python, {node_ready} node sandboxes")
+        except asyncio.TimeoutError:
+            self._log_orchestrator("Pool warm-up timed out, will continue warming in background", level="warning")
         except Exception as e:
-            self._log_orchestrator(f"Pool warm-up failed or timed out: {e}", level="warning")
+            self._log_orchestrator(f"Pool warm-up error: {e}", level="warning")
+            logger.warning(f"Pool warm-up failed: {e}")
 
     async def shutdown_pool_manager(self):
         """Shutdown the pool manager."""
