@@ -244,9 +244,16 @@ class ColdSandboxService:
             restore_ms = int((time.time() - restore_start) * 1000)
             runtime.restore_ms = restore_ms
 
-            # Step 3: Start the game
+            # Step 3: Start the game (use service client's exec_background in SERVICE mode)
             await self._emit(queue, runtime.add_log(f"Starting {runtime.game.value} game..."))
-            sandbox.launch_process(f"cd /workspace/{game_config['path']} && {game_config['run']}")
+            run_cmd = f"cd /workspace/{game_config['path']} && {game_config['run']}"
+            # SERVICE mode: use exec_background via HTTP client
+            if sandbox.mode == SandboxMode.SERVICE:
+                client = sandbox._get_service_client()
+                pid = client.exec_background(run_cmd, cwd="/workspace")
+                logger.info(f"Started game process with PID {pid}")
+            else:
+                sandbox.launch_process(run_cmd)
 
             # Get the URL
             ingress_url = sandbox.get_url()
