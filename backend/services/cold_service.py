@@ -113,6 +113,10 @@ class SandboxRuntime:
         self.created_at = datetime.utcnow()
         self.expires_at: Optional[datetime] = None
         self.logs: list[str] = []
+        # SERVICE mode: store service token and port for proxying
+        self.service_token: Optional[str] = None
+        self.game_port: int = GAME_PORT
+        self.sandbox_base_url: Optional[str] = None
 
     def add_log(self, message: str) -> LogEvent:
         """Add a log message."""
@@ -231,6 +235,10 @@ class ColdSandboxService:
             runtime.bootstrap_ms = bootstrap_ms
             runtime.sandbox = sandbox
             runtime.app_id = sandbox.app_id
+            # Store SERVICE mode details for proxying
+            runtime.service_token = sandbox._service_token
+            runtime.sandbox_base_url = sandbox.get_url()
+            runtime.game_port = game_config.get("port", GAME_PORT)
 
             await self._emit(queue, runtime.add_log(f"Sandbox ready in {bootstrap_ms}ms"))
             await self._emit(queue, runtime.add_log(f"App ID: {sandbox.app_id}"))
@@ -261,13 +269,13 @@ class ColdSandboxService:
             else:
                 sandbox.launch_process(run_cmd)
 
-            # Get the URL (use proxy endpoint for SERVICE mode)
-            base_url = sandbox.get_url()
-            game_port = game_config.get("port", GAME_PORT)
+            # Get the URL - use orchestrator's game proxy for SERVICE mode
+            # (sandbox proxy requires auth token which users don't have)
             if sandbox.mode == SandboxMode.SERVICE:
-                ingress_url = f"{base_url}/proxy/{game_port}"
+                # Return orchestrator proxy URL - frontend will use this
+                ingress_url = f"/api/game/{runtime.run_id}"
             else:
-                ingress_url = base_url
+                ingress_url = sandbox.get_url()
             runtime.ingress_url = ingress_url
 
             # Set expiry
@@ -432,6 +440,10 @@ class ColdSandboxService:
         if runtime:
             return runtime.to_info()
         return None
+
+    def get_runtime(self, run_id: UUID) -> Optional[SandboxRuntime]:
+        """Get sandbox runtime by run ID (includes service token for proxying)."""
+        return self._active_sandboxes.get(str(run_id))
 
     def get_active_sandboxes(self) -> list[SandboxInfo]:
         """Get all active sandboxes."""

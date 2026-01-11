@@ -4,9 +4,10 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, Query
+import httpx
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from sse_starlette.sse import EventSourceResponse
 
 from config import config
@@ -150,6 +151,56 @@ async def delete_sandbox(run_id: UUID):
     if not success:
         raise HTTPException(status_code=404, detail="Sandbox not found")
     return {"message": "Sandbox deleted", "run_id": str(run_id)}
+
+
+# Game proxy - forward requests to sandbox's game server
+@app.api_route("/api/game/{run_id}", methods=["GET", "POST", "PUT", "DELETE"])
+@app.api_route("/api/game/{run_id}/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
+async def game_proxy(run_id: UUID, request: Request, path: str = ""):
+    """Proxy requests to the game running inside a sandbox.
+
+    This allows users to access games without needing the sandbox's
+    service token (which is stored server-side).
+    """
+    runtime = cold_service.get_runtime(run_id)
+    if not runtime:
+        raise HTTPException(status_code=404, detail="Sandbox not found")
+
+    if not runtime.sandbox_base_url or not runtime.service_token:
+        raise HTTPException(status_code=503, detail="Sandbox not ready for proxying")
+
+    # Build target URL
+    target_url = f"{runtime.sandbox_base_url}/proxy/{runtime.game_port}/{path}"
+    if request.query_params:
+        target_url += f"?{request.query_params}"
+
+    # Proxy the request
+    headers = {"Authorization": f"Bearer {runtime.service_token}"}
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            # Forward request body if present
+            body = await request.body() if request.method in ["POST", "PUT"] else None
+
+            response = await client.request(
+                method=request.method,
+                url=target_url,
+                headers=headers,
+                content=body,
+            )
+
+            # Return proxied response
+            return Response(
+                content=response.content,
+                status_code=response.status_code,
+                headers={
+                    k: v for k, v in response.headers.items()
+                    if k.lower() not in ["content-encoding", "content-length", "transfer-encoding"]
+                },
+                media_type=response.headers.get("content-type", "text/html"),
+            )
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"Failed to proxy to sandbox: {e}")
 
 
 # Streaming
