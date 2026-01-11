@@ -178,25 +178,34 @@ class SandboxService:
         if self._pool_started:
             return
 
+        # Check if warm pool is enabled
+        if not config.WARM_POOL_ENABLED:
+            self._log_orchestrator("Warm pool disabled (set WARM_POOL_ENABLED=true to enable)")
+            return
+
         self._log_orchestrator("Initializing warm pool manager...")
 
         try:
             # Create pool manager with python and node pools
+            # Use WARM_POOL_TARGET_READY for controlled pool size
+            target_ready = config.WARM_POOL_TARGET_READY
+            max_ready = config.WARM_POOL_MAX_READY
+
             self._pool_manager = SandboxManager(
                 pools={
                     "python": PoolConfig(
-                        target_ready=config.MAX_CONCURRENT_WARM,  # Keep warm pool filled
-                        max_ready=config.MAX_CONCURRENT_WARM + 2,  # Buffer
+                        target_ready=target_ready,
+                        max_ready=max_ready,
                         idle_timeout=300,  # 5 min before scale-down
                         cooldown_after_acquire=60,  # Pause scale-down after acquire
-                        on_empty="create",  # Fall back to cold start if pool empty
+                        on_empty="fail",  # Don't auto-create, fail if pool empty
                     ),
                     "node": PoolConfig(
-                        target_ready=1,  # Keep at least one node sandbox warm
-                        max_ready=config.MAX_CONCURRENT_WARM,
+                        target_ready=1,
+                        max_ready=2,
                         idle_timeout=300,
                         cooldown_after_acquire=60,
-                        on_empty="create",
+                        on_empty="fail",  # Don't auto-create
                     ),
                 },
                 sandbox_defaults={
@@ -207,7 +216,7 @@ class SandboxService:
             )
 
             await self._pool_manager.start()
-            self._log_orchestrator(f"Warm pool manager started, warming up {config.MAX_CONCURRENT_WARM} python + 1 node sandboxes...")
+            self._log_orchestrator(f"Warm pool manager started, warming up {target_ready} python + 1 node sandboxes...")
 
             # Warm up in background (don't block startup)
             asyncio.create_task(self._warm_up_pool())
@@ -580,10 +589,29 @@ class SandboxService:
 
     async def stream_events(self, run_id: UUID) -> AsyncGenerator:
         """Stream events for a sandbox."""
-        queue = self._event_queues.get(str(run_id))
+        run_id_str = str(run_id)
+        queue = self._event_queues.get(run_id_str)
+        runtime = self._active_sandboxes.get(run_id_str)
+
         if not queue:
             return
 
+        # First, replay any buffered logs that were emitted before SSE connected
+        if runtime and runtime.logs:
+            for log_message in runtime.logs:
+                yield LogEvent(run_id=run_id, message=log_message)
+
+        # If sandbox is already ready, send the ready event
+        if runtime and runtime.status == SandboxStatus.RUNNING and runtime.ingress_url:
+            yield ReadyEvent(
+                run_id=run_id,
+                ingress_url=runtime.ingress_url,
+                bootstrap_ms=runtime.bootstrap_ms or 0,
+                restore_ms=runtime.restore_ms,
+                total_ms=runtime.total_ms or runtime.bootstrap_ms or 0,
+            )
+
+        # Then stream live events from the queue
         while True:
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=30)

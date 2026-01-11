@@ -5,8 +5,8 @@ import './globals.css';
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'DO App Sandbox Demo',
-  description: 'Experience the speed difference: Cold Start vs Warm Pool vs Snapshot',
+  title: 'Orchestrator',
+  description: 'Run every agent session in its own sandbox',
 };
 
 export default function RootLayout({

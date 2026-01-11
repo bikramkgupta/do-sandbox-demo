@@ -35,6 +35,7 @@ class Config:
     CLEANUP_INTERVAL_SECONDS: int = int(os.getenv("CLEANUP_INTERVAL_SECONDS", "30"))
 
     # Warm pool settings
+    WARM_POOL_ENABLED: bool = os.getenv("WARM_POOL_ENABLED", "false").lower() == "true"
     WARM_POOL_TARGET_READY: int = int(os.getenv("WARM_POOL_TARGET_READY", "2"))
     WARM_POOL_MAX_READY: int = int(os.getenv("WARM_POOL_MAX_READY", "4"))
 

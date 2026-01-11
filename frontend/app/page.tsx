@@ -32,7 +32,9 @@ const GAMES: { value: GameType; label: string; emoji: string }[] = [
 function OrchestratorLogsPane() {
   const [isExpanded, setIsExpanded] = useState(false);
   const [logs, setLogs] = useState<OrchestratorLog[]>([]);
-  const logsEndRef = useRef<HTMLDivElement>(null);
+  const logsContainerRef = useRef<HTMLDivElement>(null);
+  const isUserScrolledRef = useRef(false);
+  const prevLogCountRef = useRef(0);
 
   useEffect(() => {
     const fetchLogs = async () => {
@@ -49,9 +51,26 @@ function OrchestratorLogsPane() {
     return () => clearInterval(interval);
   }, []);
 
+  // Track if user has scrolled away from bottom
+  const handleScroll = useCallback(() => {
+    const container = logsContainerRef.current;
+    if (!container) return;
+
+    const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
+    isUserScrolledRef.current = !isAtBottom;
+  }, []);
+
+  // Only auto-scroll if user hasn't scrolled away and there are new logs
   useEffect(() => {
-    if (isExpanded && logsEndRef.current) {
-      logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    const container = logsContainerRef.current;
+    if (!isExpanded || !container) return;
+
+    // Auto-scroll only if user is at bottom or there are new logs
+    const hasNewLogs = logs.length > prevLogCountRef.current;
+    prevLogCountRef.current = logs.length;
+
+    if (hasNewLogs && !isUserScrolledRef.current) {
+      container.scrollTop = container.scrollHeight;
     }
   }, [logs, isExpanded]);
 
@@ -87,7 +106,11 @@ function OrchestratorLogsPane() {
 
       {isExpanded && (
         <div className="border-t border-white/5 animate-fade-in">
-          <div className="h-48 overflow-y-auto font-mono text-xs">
+          <div
+            ref={logsContainerRef}
+            onScroll={handleScroll}
+            className="h-48 overflow-y-auto font-mono text-xs"
+          >
             {logs.length === 0 ? (
               <div className="p-4 text-gray-500 text-center">
                 Waiting for orchestrator events...
@@ -105,7 +128,6 @@ function OrchestratorLogsPane() {
                 </div>
               ))
             )}
-            <div ref={logsEndRef} />
           </div>
         </div>
       )}
@@ -759,7 +781,7 @@ export default function Home() {
         {/* Header */}
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold text-white mb-2">
-            <span className="text-do-blue">DO</span> App Sandbox Demo
+            Orchestrator
           </h1>
           <p className="text-gray-400 text-lg">
             Run every agent session in its own sandbox
