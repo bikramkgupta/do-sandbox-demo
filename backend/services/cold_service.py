@@ -26,8 +26,35 @@ from models.schemas import (
 from services.rate_limiter import rate_limiter, RateLimitError
 
 
+# Import SDK exceptions for retry logic
+from do_app_sandbox.exceptions import ServiceConnectionError
+
 # GitHub repo for games
 GAMES_REPO = "https://github.com/bikramkgupta/do-sandbox-games.git"
+
+# DNS propagation can take time after sandbox creation
+DNS_PROPAGATION_DELAY = 15  # seconds to wait after sandbox is ready
+EXEC_RETRY_ATTEMPTS = 5
+EXEC_RETRY_DELAY = 5  # seconds between retries
+
+
+def exec_with_retry(sandbox, command: str, timeout: int = 120, max_retries: int = EXEC_RETRY_ATTEMPTS):
+    """Execute command with retry logic for DNS propagation issues."""
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            return sandbox.exec(command, timeout=timeout)
+        except (ServiceConnectionError, Exception) as e:
+            last_error = e
+            error_msg = str(e)
+            # Retry on DNS/connection errors
+            if "Name or service not known" in error_msg or "Connection" in error_msg:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Exec attempt {attempt + 1} failed ({error_msg}), retrying in {EXEC_RETRY_DELAY}s...")
+                    time.sleep(EXEC_RETRY_DELAY)
+                    continue
+            raise
+    raise last_error
 
 # Game configurations
 GAME_CONFIG = {
@@ -202,6 +229,10 @@ class ColdSandboxService:
             await self._emit(queue, runtime.add_log(f"Sandbox ready in {bootstrap_ms}ms"))
             await self._emit(queue, runtime.add_log(f"App ID: {sandbox.app_id}"))
 
+            # Wait for DNS propagation before trying to connect
+            await self._emit(queue, runtime.add_log(f"Waiting {DNS_PROPAGATION_DELAY}s for DNS propagation..."))
+            await asyncio.sleep(DNS_PROPAGATION_DELAY)
+
             # Step 2: Deploy game (snapshot or git clone)
             restore_start = time.time()
 
@@ -266,8 +297,9 @@ class ColdSandboxService:
             snapshot_url = f"https://{config.SPACES_BUCKET}.{config.SPACES_REGION}.digitaloceanspaces.com/snapshots/{snapshot_id}.tar.gz"
             await self._emit(queue, runtime.add_log(f"Downloading snapshot: {snapshot_id}"))
 
-            # Download snapshot
-            result = runtime.sandbox.exec(
+            # Download snapshot (with retry for DNS propagation)
+            result = exec_with_retry(
+                runtime.sandbox,
                 f"wget -q -O /tmp/snapshot.tar.gz {snapshot_url}",
                 timeout=60
             )
@@ -275,7 +307,8 @@ class ColdSandboxService:
             if result.success:
                 # Extract snapshot
                 await self._emit(queue, runtime.add_log("Extracting snapshot..."))
-                result = runtime.sandbox.exec(
+                result = exec_with_retry(
+                    runtime.sandbox,
                     f"cd /workspace && tar -xzf /tmp/snapshot.tar.gz",
                     timeout=30
                 )
@@ -285,7 +318,8 @@ class ColdSandboxService:
                     # Still need to install deps (snapshots contain code, not installed deps)
                     await self._emit(queue, runtime.add_log("Installing dependencies..."))
                     install_cmd = game_config["install"]
-                    result = runtime.sandbox.exec(
+                    result = exec_with_retry(
+                        runtime.sandbox,
                         f"cd /workspace/{game_path} && {install_cmd}",
                         timeout=120
                     )
@@ -306,8 +340,9 @@ class ColdSandboxService:
         """Deploy game by cloning from GitHub."""
         await self._emit(queue, runtime.add_log(f"Cloning from {GAMES_REPO}..."))
 
-        # Clone the repo
-        result = runtime.sandbox.exec(
+        # Clone the repo (with retry for DNS propagation)
+        result = exec_with_retry(
+            runtime.sandbox,
             f"git clone --depth 1 {GAMES_REPO} /workspace/games",
             timeout=60
         )
@@ -318,12 +353,13 @@ class ColdSandboxService:
 
         # Move game to workspace
         game_path = game_config["path"]
-        runtime.sandbox.exec(f"mv /workspace/games/{game_path} /workspace/{game_path}")
+        exec_with_retry(runtime.sandbox, f"mv /workspace/games/{game_path} /workspace/{game_path}", timeout=30)
 
         # Install dependencies
         await self._emit(queue, runtime.add_log(f"Installing dependencies..."))
         install_cmd = game_config["install"]
-        result = runtime.sandbox.exec(
+        result = exec_with_retry(
+            runtime.sandbox,
             f"cd /workspace/{game_path} && {install_cmd}",
             timeout=120
         )
