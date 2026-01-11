@@ -37,7 +37,9 @@ class Config:
     # Warm pool settings
     WARM_POOL_ENABLED: bool = os.getenv("WARM_POOL_ENABLED", "false").lower() == "true"
     WARM_POOL_TARGET_READY: int = int(os.getenv("WARM_POOL_TARGET_READY", "2"))
-    WARM_POOL_MAX_READY: int = int(os.getenv("WARM_POOL_MAX_READY", "4"))
+    WARM_POOL_MAX_READY: int = int(os.getenv("WARM_POOL_MAX_READY", "10"))
+    WARM_POOL_IDLE_TIMEOUT: int = int(os.getenv("WARM_POOL_IDLE_TIMEOUT", "120"))
+    WARM_POOL_MAX_CONCURRENT_CREATES: int = int(os.getenv("WARM_POOL_MAX_CONCURRENT_CREATES", "3"))
 
     # Available games
     AVAILABLE_GAMES: list = field(default_factory=lambda: ["snake", "tic-tac-toe", "memory"])

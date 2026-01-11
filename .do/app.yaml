@@ -43,10 +43,22 @@ services:
         value: "2"
       - key: MAX_TOTAL_ACTIVE
         scope: RUN_TIME
-        value: "6"
+        value: "10"
       - key: MAX_RUNS_PER_HOUR
         scope: RUN_TIME
+        value: "25"
+      - key: WARM_POOL_ENABLED
+        scope: RUN_TIME
+        value: "true"
+      - key: WARM_POOL_TARGET_READY
+        scope: RUN_TIME
+        value: "2"
+      - key: WARM_POOL_MAX_READY
+        scope: RUN_TIME
         value: "10"
+      - key: WARM_POOL_IDLE_TIMEOUT
+        scope: RUN_TIME
+        value: "120"
 
   # Next.js Frontend
   - name: frontend

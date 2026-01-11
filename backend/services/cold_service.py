@@ -187,36 +187,43 @@ class SandboxService:
 
         try:
             # Create pool manager with python and node pools
-            # Use WARM_POOL_TARGET_READY for controlled pool size
-            target_ready = config.WARM_POOL_TARGET_READY
-            max_ready = config.WARM_POOL_MAX_READY
+            # Configuration based on SDK documentation
+            target_ready = config.WARM_POOL_TARGET_READY  # Default: 2
+            max_ready = config.WARM_POOL_MAX_READY  # Default: 10
+            idle_timeout = config.WARM_POOL_IDLE_TIMEOUT  # Default: 120 (2 min)
+            max_concurrent_creates = config.WARM_POOL_MAX_CONCURRENT_CREATES  # Default: 3
 
             self._pool_manager = SandboxManager(
                 pools={
                     "python": PoolConfig(
                         target_ready=target_ready,
                         max_ready=max_ready,
-                        idle_timeout=300,  # 5 min before scale-down
-                        cooldown_after_acquire=60,  # Pause scale-down after acquire
-                        on_empty="fail",  # Don't auto-create, fail if pool empty
+                        idle_timeout=idle_timeout,
+                        cooldown_after_acquire=120,  # Pause scale-down for 2 min after acquire
+                        on_empty="create",  # Fallback to cold start if pool empty
+                        create_retries=2,
+                        create_retry_delay=5,
                     ),
                     "node": PoolConfig(
                         target_ready=1,
-                        max_ready=2,
-                        idle_timeout=300,
-                        cooldown_after_acquire=60,
-                        on_empty="fail",  # Don't auto-create
+                        max_ready=3,
+                        idle_timeout=idle_timeout,
+                        cooldown_after_acquire=120,
+                        on_empty="create",
+                        create_retries=2,
+                        create_retry_delay=5,
                     ),
                 },
+                max_concurrent_creates=max_concurrent_creates,  # Limit parallel creations
                 sandbox_defaults={
-                    "region": "nyc",
+                    "region": "syd",
                     "api_token": config.DIGITALOCEAN_TOKEN,
                     "mode": SandboxMode.SERVICE,
                 },
             )
 
             await self._pool_manager.start()
-            self._log_orchestrator(f"Warm pool manager started, warming up {target_ready} python + 1 node sandboxes...")
+            self._log_orchestrator(f"Warm pool started (target={target_ready}, max={max_ready}, idle_timeout={idle_timeout}s, max_creates={max_concurrent_creates})")
 
             # Warm up in background (don't block startup)
             asyncio.create_task(self._warm_up_pool())
