@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import AsyncGenerator, Optional
 from uuid import UUID, uuid4
 
-from do_app_sandbox import Sandbox, SpacesConfig
+from do_app_sandbox import Sandbox, SpacesConfig, SandboxMode
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -183,11 +183,12 @@ class ColdSandboxService:
 
             bootstrap_start = time.time()
 
-            logger.info(f"Calling Sandbox.create() with image={game_config['image']}")
+            logger.info(f"Calling Sandbox.create() with image={game_config['image']}, mode=SERVICE")
             sandbox = Sandbox.create(
                 image=game_config["image"],
                 api_token=config.DIGITALOCEAN_TOKEN,
                 spaces_config=self._get_spaces_config(),
+                mode=SandboxMode.SERVICE,  # Use HTTP API instead of doctl console
                 wait_ready=True,
                 timeout=120,
             )
