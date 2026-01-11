@@ -9,390 +9,136 @@ This document captures critical issues that need to be fixed in the Orchestrator
 
 ---
 
-## Getting Started (Clean Session)
+## CURRENT STATUS (2026-01-11)
 
-### 1. Clean Up First
+### Warm Pool: DISABLED
 
-```bash
-# Delete ALL sandbox apps to start fresh
-doctl apps list --format ID,Spec.Name | grep sandbox | awk '{print $1}' | xargs -I {} doctl apps delete {} --force
+The warm pool has been **disabled** due to a confirmed SDK bug. All games now use cold starts (~30-45s).
 
-# Verify no sandboxes remain
-doctl apps list | grep sandbox
-# Should show nothing
+```yaml
+# .do/app.yaml
+WARM_POOL_ENABLED: "false"  # DISABLED - SDK bug causes infinite sandbox creation
 ```
 
-### 2. Force Redeploy Orchestrator
+### Root Cause: CONFIRMED SDK BUG
 
-```bash
-# This restarts the backend and triggers fresh pool initialization
-doctl apps create-deployment 93325ad4-ec00-4211-862c-23489ec3e32c
+We isolated and confirmed that the `do-app-sandbox` SDK's `SandboxManager` has a critical bug:
+
+1. **Does not respect `max_ready` limit** - Creates 5+ sandboxes when max_ready=3
+2. **Does not properly track sandboxes** - Metrics fluctuate wildly (0 ready → 5 ready → 1 ready)
+3. **Continuously creates sandboxes** - Even when above target_ready
+
+**Evidence collected on 2026-01-11:**
+
+```
+=== Check 3 (15:05:57) ===
+Pool: ready=3, creating=0  ← Good, at max_ready=3
+
+=== Check 4 (15:06:29) ===
+Pool: ready=3, creating=2  ← BUG! Creating when already at max!
+DO Apps: 4 sandboxes
+
+=== Check 5 (15:07:01) ===
+Pool: ready=1, creating=1  ← Lost track of sandboxes!
+DO Apps: 5 sandboxes
+
+=== Check 6 (15:07:32) ===
+Pool: ready=5, creating=1  ← ready=5 exceeds max_ready=3!
+DO Apps: 6 sandboxes
 ```
 
-### 3. Monitor for 5 Minutes
-
-```bash
-# Watch sandbox creation with NO user interaction
-watch -n 10 'echo "=== Sandbox Apps ===" && doctl apps list --format Spec.Name,ActiveDeployment.Phase | grep sandbox && echo "" && echo "=== Pool Status ===" && curl -s https://orchestrator-demo-3cu9r.ondigitalocean.app/api/pool/status'
-```
-
-**Expected:** 2-3 sandboxes total (target_ready=2 for Python + 1 for Node = 3)
-**If you see 5+ sandboxes:** There's a churn/leak issue
-
-### 4. Test the Games
-
-```bash
-# Test Snake (Python) - should work
-curl -X POST "https://orchestrator-demo-3cu9r.ondigitalocean.app/api/launch/warm" \
-  -H "Content-Type: application/json" \
-  -d '{"game": "snake", "use_snapshot": true}'
-
-# Test Memory (Python) - should work
-curl -X POST "https://orchestrator-demo-3cu9r.ondigitalocean.app/api/launch/warm" \
-  -H "Content-Type: application/json" \
-  -d '{"game": "memory", "use_snapshot": true}'
-
-# Test Tic-Tac-Toe (Node) - may cold-start since Node pool has issues
-curl -X POST "https://orchestrator-demo-3cu9r.ondigitalocean.app/api/launch/cold" \
-  -H "Content-Type: application/json" \
-  -d '{"game": "tic-tac-toe", "use_snapshot": true}'
-```
+**How we isolated the bug:**
+1. Disabled orchestrator's cleanup_task (to eliminate our code as cause)
+2. Observed sandbox count still growing without user requests
+3. Confirmed SDK is creating sandboxes it doesn't track
+4. SDK's metrics don't match actual DO apps
 
 ---
 
-## Issue 1: Warm Pool Over-Provisioning / Sandbox Churn (CRITICAL)
+## Issue 1: SDK SandboxManager Bug (CRITICAL - BLOCKING)
 
 ### Problem Statement
 
-The warm pool is creating sandboxes constantly even when there is **zero user demand**. Screenshots show:
-- 9-10 sandbox apps in DigitalOcean
-- Sandboxes constantly in "Creating..." state (deployed less than 20 seconds ago)
-- New sandboxes appearing every few seconds
+The `do-app-sandbox` SDK's `SandboxManager` creates sandboxes in an infinite loop, not respecting configuration limits.
 
-**Expected behavior:** Pool should maintain `target_ready=2` sandboxes for Python (and 1 for Node = 3 total). These should sit idle until needed, not churn constantly.
+### Symptoms
 
-**Actual behavior:** Constant sandbox creation/destruction cycle resulting in 9+ apps when only 3 should exist.
+- Pool creates sandboxes beyond `max_ready` limit
+- `metrics()` returns inconsistent/incorrect counts
+- Sandboxes created even when pool is at target
+- `max_concurrent_creates` not enforced
 
-### Evidence
+### SDK Source Location
+
+**Repository:** https://github.com/bikramkgupta/do-app-sandbox
+**Key file:** `do_app_sandbox/sandbox_manager.py` (or similar)
+
+### Debugging Plan
+
+#### Step 1: Clone and Inspect SDK Source
 
 ```bash
-$ doctl apps list | grep sandbox | wc -l
-9
+git clone https://github.com/bikramkgupta/do-app-sandbox.git
+cd do-app-sandbox
+
+# Find the SandboxManager implementation
+find . -name "*.py" -exec grep -l "SandboxManager" {} \;
+
+# Look for pool management logic
+grep -r "target_ready\|max_ready\|creating" --include="*.py"
 ```
 
-Screenshot shows constant churn:
-- sandbox-2cb2f325: "Creating..." (deployed less than 20 seconds ago)
-- sandbox-651171a9: "Creating..." (deployed less than 20 seconds ago)
-- sandbox-43cf814c: "Healthy" (deployed less than a minute ago)
-- sandbox-aed9ef9c: "Healthy" (deployed less than a minute ago)
+#### Step 2: Add Debug Logging to SDK
 
-### Root Cause Analysis - Three Hypotheses
-
-#### Hypothesis A: Sandbox Lifetime Conflict (Most Likely)
-
-**Two systems managing sandbox lifetime:**
-
-1. **SDK Pool Management:**
-   - `max_warm_age=1800` (30 min) - cycle sandboxes after 30 min
-   - `idle_timeout=120` (2 min) - scale down after no acquires
-
-2. **Orchestrator Cleanup Task:**
-   - `SANDBOX_MIN_LIFETIME_MINUTES=3` / `SANDBOX_MAX_LIFETIME_MINUTES=6`
-   - Cleanup runs every 30 seconds
-   - Deletes sandboxes where `expires_at <= now`
-
-**POTENTIAL BUG:** When a user acquires a warm sandbox:
-1. SDK gives sandbox to user (removes from pool)
-2. Orchestrator sets `expires_at = now + 3-6 minutes`
-3. After 3-6 min, orchestrator calls `sandbox.delete()`
-4. SDK sees pool below target_ready, creates replacement
-5. Churn cycle begins
-
-**BUT** this only explains churn for USER-LAUNCHED sandboxes. The screenshot shows churn with NO user activity.
-
-#### Hypothesis B: Sandbox Creation Failures
-
-If sandbox creation is failing or timing out:
-1. SDK attempts to create sandbox
-2. DO App is created but sandbox doesn't become ready
-3. SDK times out (create_retries=2, create_retry_delay=10)
-4. Orphaned DO app left behind
-5. SDK tries again, more orphans accumulate
-
-This would explain 9 apps when target is only 3.
-
-**Evidence needed:** Check DO app status - are any stuck in non-healthy state?
-
-#### Hypothesis C: SDK Bug
-
-The do-app-sandbox SDK's SandboxManager may have a bug:
-- Not properly tracking sandboxes it creates
-- Creating more than target_ready
-- Not respecting max_concurrent_creates limit
-
-**Investigation needed:** Add verbose logging to SDK interactions, or test SDK in isolation.
-
-### Current Configuration
+Create a local copy with verbose logging:
 
 ```python
-# Pool Config (cold_service.py)
-"python": PoolConfig(
-    target_ready=2,           # Want 2 ready
-    max_ready=10,             # Allow up to 10
-    idle_timeout=120,         # Scale down after 2 min idle
-    max_warm_age=1800,        # Cycle after 30 min
-    max_concurrent_creates=2,  # Max 2 creating at once
-)
-"node": PoolConfig(
-    target_ready=1,
-    max_ready=3,
-    ...
-)
-max_total_sandboxes=13  # Global limit
+# In sandbox_manager.py, add logging to:
+# - _check_pool_levels() or equivalent
+# - _create_sandbox() or equivalent
+# - Any background task that manages pool size
+
+import logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger("do_app_sandbox")
+
+# Before any sandbox creation:
+logger.debug(f"Pool state: ready={self.ready_count}, creating={self.creating_count}, target={self.target_ready}, max={self.max_ready}")
+logger.debug(f"Decision: should_create={should_create}")
 ```
+
+#### Step 3: Create Minimal Reproduction Script
 
 ```python
-# Orchestrator Cleanup (config.py)
-SANDBOX_MIN_LIFETIME_MINUTES=3
-SANDBOX_MAX_LIFETIME_MINUTES=6
-CLEANUP_INTERVAL_SECONDS=30
-```
-
-### Investigation Steps
-
-1. **Monitor DO apps over 5 minutes with NO user interaction:**
-   ```bash
-   watch -n 10 'doctl apps list --format Spec.Name,ActiveDeployment.Phase | grep sandbox'
-   ```
-
-2. **Check if sandboxes are failing creation:**
-   ```bash
-   doctl apps list --format Spec.Name,ID | grep sandbox | while read name id; do
-     echo "=== $name ==="
-     doctl apps get $id --format ActiveDeployment.Phase
-   done
-   ```
-
-3. **Check orchestrator logs for errors:**
-   ```bash
-   curl -s "https://orchestrator-demo-3cu9r.ondigitalocean.app/api/orchestrator/logs?limit=50"
-   ```
-
-4. **Check pool status API:**
-   ```bash
-   curl -s "https://orchestrator-demo-3cu9r.ondigitalocean.app/api/pool/status"
-   ```
-
-### Fix Plan
-
-1. **Add verbose logging** - Log every sandbox create/delete with app_id
-2. **Reduce limits significantly:**
-   - `target_ready=1` (not 2)
-   - `max_ready=2` (not 10)
-   - `max_total_sandboxes=3` (not 13)
-3. **Ensure cleanup only affects user-launched sandboxes** - Verify pool sandboxes aren't being cleaned up
-4. **Consider disabling warm_up() temporarily** - Let pool scale up on-demand only
-5. **Add reconciliation** - Periodically check DO apps vs tracked sandboxes
-
-### Files to Modify
-
-- `backend/services/cold_service.py` - Pool config, add logging
-- `backend/config.py` - Reduce default limits
-- `.do/app.yaml` - Update environment variables
-
----
-
-## Issue 2: Simplify to Single Pool (Python Only)
-
-### Problem Statement
-
-The current configuration has TWO pools:
-- Python pool (for Snake, Memory games) - `target_ready=2`
-- Node pool (for Tic-Tac-Toe game) - `target_ready=1`
-
-This adds complexity and the Node pool has issues (observed 0 ready sandboxes).
-
-### Game Runtime Analysis
-
-| Game | Runtime | Image | Snapshot ID |
-|------|---------|-------|-------------|
-| Snake | Python | `python` | `snake-python` |
-| Memory | Python | `python` | `memory-python` |
-| Tic-Tac-Toe | Node.js | `node` | `tictactoe-node` |
-
-**2 out of 3 games use Python.**
-
-### Recommendation: Single Python Pool
-
-For this demo, simplify to ONE pool:
-
-1. **Keep Python pool only** with `target_ready=2`
-2. **Tic-Tac-Toe will cold-start** (no warm pool for Node) - this is fine for demo purposes
-3. Reduces complexity and debugging surface area
-4. Snake and Memory (both Python) will be instant from warm pool
-
-**Note:** We're NOT removing Tic-Tac-Toe from the UI. Users can still play it, it will just take ~30s cold start instead of instant.
-
-### Fix Plan
-
-1. Remove `"node": PoolConfig(...)` from `cold_service.py`
-2. Update `max_total_sandboxes` to be smaller (e.g., 3 instead of 13)
-3. Keep Tic-Tac-Toe in UI but it will gracefully fall back to cold start
-
-### Files to Modify
-
-- `backend/services/cold_service.py` - Remove Node pool config
-
----
-
-## Issue 3: SSE Log Streaming Not Working
-
-### Problem Statement
-
-When a user clicks "Launch Warm", the expanded panel shows:
-```
-Waiting for orchestrator events...
-```
-
-Instead of streaming the actual deployment logs like:
-- "Acquiring sandbox from warm pool..."
-- "Pool acquisition: 582ms (pool hit)"
-- "Deploying snake from snapshot..."
-- "Game ready!"
-
-The main orchestrator log pane (at top) DOES show logs. But the per-launch SSE stream is broken.
-
-### Evidence
-
-Testing SSE endpoint directly returns nothing:
-```bash
-$ curl -m 5 "https://orchestrator-demo-3cu9r.ondigitalocean.app/api/stream/{run_id}"
-# Times out with 0 bytes received - no HTTP headers even
-```
-
-### Root Cause Analysis
-
-**Location:** `backend/main.py` lines 215-229 and `backend/services/cold_service.py` lines 629-660
-
-The `stream_events()` async generator has replay logic:
-```python
-# First, replay any buffered logs that were emitted before SSE connected
-if runtime and runtime.logs:
-    for log_message in runtime.logs:
-        yield LogEvent(run_id=run_id, message=log_message)
-```
-
-But the SSE connection appears to hang. Possible causes:
-
-1. **App Platform routing issue** - Long-lived SSE connections may not work properly through DO App Platform's HTTP/2 routing
-2. **EventSourceResponse configuration** - May need specific headers for App Platform
-3. **Race condition** - Warm pool is so fast (~500ms) that events finish before SSE connects, and replay isn't working
-
-### Debugging Steps
-
-1. Test SSE locally (bypass App Platform routing)
-2. Add explicit flush/ping to SSE stream
-3. Check if `sse-starlette` library needs specific configuration
-4. Consider using polling instead of SSE for reliability
-
-### Files to Modify
-
-- `backend/main.py` - SSE endpoint configuration
-- `backend/services/cold_service.py` - stream_events() implementation
-- `frontend/hooks/use-sse.ts` - SSE client handling
-- `frontend/hooks/use-sandbox.ts` - Event handling
-
----
-
-## Issue 4: Tic-Tac-Toe and Memory Games Not Working
-
-### Problem Statement
-
-Only Snake game has been tested. Tic-Tac-Toe and Memory games need verification.
-
-### Verification Steps
-
-1. **Manual test each game via cold start:**
-   ```bash
-   # Launch Tic-Tac-Toe (Node)
-   curl -X POST "https://orchestrator-demo-3cu9r.ondigitalocean.app/api/launch/cold" \
-     -H "Content-Type: application/json" \
-     -d '{"game": "tic-tac-toe", "use_snapshot": true}'
-
-   # Launch Memory (Python)
-   curl -X POST "https://orchestrator-demo-3cu9r.ondigitalocean.app/api/launch/cold" \
-     -H "Content-Type: application/json" \
-     -d '{"game": "memory", "use_snapshot": true}'
-   ```
-
-2. **Check game URLs work:**
-   - Get the `ingress_url` from status endpoint
-   - Verify game loads in browser
-
-3. **Check snapshot restoration:**
-   - Verify snapshots exist in Spaces bucket for all games
-   - Check snapshot download/extract works
-
-### Potential Issues
-
-1. **Snapshot not found** - Game falls back to git clone (slower)
-2. **Port conflict** - All games configured for port 5000, should be fine
-3. **Dependencies not installed** - Check install commands work
-
-### Files to Check
-
-- Games repo: `https://github.com/bikramkgupta/do-sandbox-games`
-- Snapshot bucket: Check Spaces for `snake-python.tar.gz`, `tictactoe-node.tar.gz`, `memory-python.tar.gz`
-
----
-
-## Issue 5: Determine SDK Bug vs Orchestrator Bug
-
-### The Core Question
-
-Is the sandbox churn caused by:
-- **A) do-app-sandbox SDK bug** - SDK's SandboxManager isn't working correctly
-- **B) Orchestrator misconfiguration** - Our code is misconfiguring or misusing the SDK
-
-### SDK Documentation Reference
-
-According to `https://github.com/bikramkgupta/do-app-sandbox/blob/main/docs/sandbox_manager.md`:
-
-```
-Pool behavior:
-- Starts idle (0 warm) unless warm_up() is called
-- Scales to target_ready on first acquire, then maintains that level
-- Scales down after idle_timeout of no acquires
-```
-
-Key parameters:
-- `target_ready` - Desired count when pool is active
-- `max_ready` - Hard ceiling
-- `idle_timeout` - Seconds before scale-down begins
-- `scale_down_delay` - Seconds between destroying sandboxes during scale-down
-
-### Investigation: Test SDK in Isolation
-
-To determine if this is an SDK bug, create a minimal test script that uses SandboxManager WITHOUT the orchestrator:
-
-```python
-# test_sdk_pool.py
+#!/usr/bin/env python3
+"""
+Minimal reproduction of SDK SandboxManager bug.
+Run this OUTSIDE the orchestrator to isolate the issue.
+
+Expected: Pool stabilizes at target_ready=2, never exceeds max_ready=3
+Actual: Pool keeps creating sandboxes, exceeds limits
+"""
 import asyncio
-from do_app_sandbox import SandboxManager, PoolConfig, SandboxMode
 import os
+from datetime import datetime
+from do_app_sandbox import SandboxManager, PoolConfig, SandboxMode
 
-async def test_pool():
+async def test_pool_stability():
+    print(f"[{datetime.now()}] Starting SDK pool test...")
+
     manager = SandboxManager(
         pools={
             "python": PoolConfig(
                 target_ready=2,
                 max_ready=3,
-                idle_timeout=60,  # 1 minute
-                scale_down_delay=30,
+                idle_timeout=600,  # 10 min - long enough to observe
+                scale_down_delay=120,
+                max_warm_age=3600,
+                on_empty="create",
             ),
         },
         max_total_sandboxes=5,
-        max_concurrent_creates=1,
+        max_concurrent_creates=1,  # Serialize to make debugging easier
         sandbox_defaults={
             "region": "syd",
             "api_token": os.environ["DIGITALOCEAN_TOKEN"],
@@ -401,92 +147,171 @@ async def test_pool():
     )
 
     await manager.start()
-    print("Pool started")
+    print(f"[{datetime.now()}] Pool started (not calling warm_up)")
 
-    # Warm up
-    await manager.warm_up(timeout=120)
-    print("Warm up complete")
+    # Monitor for 5 minutes WITHOUT any user interaction
+    print("\nMonitoring pool for 5 minutes with NO acquires...")
+    print("Expected: ready count should stabilize at 0-2, never exceed 3")
+    print("-" * 60)
 
-    # Monitor for 5 minutes without any acquires
-    for i in range(30):
+    for i in range(30):  # 30 checks, 10s apart = 5 minutes
         metrics = manager.metrics()
-        print(f"[{i*10}s] Python pool: ready={metrics['python'].ready}, creating={metrics['python'].creating}")
+        python_pool = metrics.get("python", {})
+
+        if hasattr(python_pool, 'ready'):
+            ready = python_pool.ready
+            creating = python_pool.creating
+        else:
+            ready = python_pool.get("ready", 0)
+            creating = python_pool.get("creating", 0)
+
+        # Flag issues
+        issues = []
+        if ready > 3:
+            issues.append(f"READY EXCEEDS MAX! ({ready} > 3)")
+        if creating > 1:
+            issues.append(f"CONCURRENT CREATES EXCEEDS LIMIT! ({creating} > 1)")
+        if ready + creating > 5:
+            issues.append(f"TOTAL EXCEEDS MAX_TOTAL! ({ready + creating} > 5)")
+
+        issue_str = " | ".join(issues) if issues else "OK"
+        print(f"[{i*10:3d}s] ready={ready}, creating={creating} | {issue_str}")
+
         await asyncio.sleep(10)
 
-    # Check DO apps
-    print("\nNow check: doctl apps list | grep sandbox")
-    print("Expected: Only 2 sandbox apps (target_ready=2)")
+    print("-" * 60)
+    print("\nTest complete. Now run: doctl apps list | grep sandbox")
+    print("Expected: 2-3 sandbox apps")
+    print("If more: SDK bug confirmed")
 
+    print("\nShutting down pool...")
     await manager.shutdown()
+    print("Done.")
 
-asyncio.run(test_pool())
+if __name__ == "__main__":
+    asyncio.run(test_pool_stability())
 ```
 
-**If test shows 2 sandboxes stable for 5 minutes:** SDK is fine, bug is in orchestrator
-**If test shows sandbox churn:** SDK has a bug, report to SDK maintainer
+#### Step 4: Check These Specific Areas in SDK
 
-### Recommended Workflow
+1. **Background pool maintenance task:**
+   - Is there a loop that runs continuously?
+   - Does it correctly check current count vs target before creating?
 
-1. **Delete all sandbox apps first:**
-   ```bash
-   doctl apps list --format ID,Spec.Name | grep sandbox | awk '{print $1}' | xargs -I {} doctl apps delete {} --force
+2. **Sandbox tracking:**
+   - How does SDK track sandboxes it creates?
+   - Are there race conditions where a sandbox is created but not tracked?
+
+3. **State synchronization:**
+   - Does SDK track by app_id or by internal object?
+   - What happens if a sandbox creation times out?
+
+4. **Concurrency control:**
+   - How is `max_concurrent_creates` enforced?
+   - Is there a semaphore/lock that could be failing?
+
+#### Step 5: Potential Fixes to Try
+
+1. **Add mutex around pool scaling logic:**
+   ```python
+   self._scaling_lock = asyncio.Lock()
+
+   async def _scale_pool(self):
+       async with self._scaling_lock:
+           # Only one scaling operation at a time
+           ...
    ```
 
-2. **Run SDK isolation test** (above)
+2. **Add reconciliation with DO API:**
+   ```python
+   async def _reconcile_with_do(self):
+       # Fetch actual apps from DO
+       actual_apps = await self._list_sandbox_apps()
+       # Compare with tracked sandboxes
+       # Remove orphans, update tracking
+   ```
 
-3. **Based on results, either:**
-   - Fix orchestrator code (if SDK is fine)
-   - Report SDK bug (if SDK is broken)
+3. **Add strict limit enforcement:**
+   ```python
+   if self._ready_count >= self._max_ready:
+       logger.warning("At max_ready, skipping creation")
+       return
+   ```
+
+### Files to Modify in SDK
+
+| File | What to Check |
+|------|---------------|
+| `sandbox_manager.py` | Main pool logic, background tasks |
+| `pool.py` or `pool_manager.py` | Pool state tracking |
+| Any file with `asyncio.create_task` | Background tasks that might race |
 
 ---
 
-## Priority Order
+## Issue 2: Node Pool Removed (DONE)
 
-1. **Issue 5 (SDK vs Orchestrator)** - FIRST - Need to identify root cause before fixing
-2. **Issue 1 (Warm Pool Churn)** - CRITICAL - Fix once root cause is known
-3. **Issue 2 (Single Pool)** - HIGH - Simplifies everything
-4. **Issue 4 (Games)** - MEDIUM - Need working demo games
-5. **Issue 3 (SSE)** - LOW - Nice to have but not blocking (main orchestrator logs work)
+The Node pool has been removed from the configuration. Only Python pool remains (when re-enabled).
+
+- Tic-Tac-Toe game will use cold start
+- Snake and Memory will use warm pool (when fixed)
 
 ---
 
-## Quick Reference: Current Configuration
+## Issue 3: SSE Log Streaming (LOW PRIORITY)
 
-### Environment Variables (app.yaml)
+Per-launch SSE streaming is broken. Main orchestrator logs work.
+
+**Status:** Deferred until SDK bug is fixed.
+
+---
+
+## Issue 4: Game Verification (MEDIUM PRIORITY)
+
+All 3 games need testing with cold starts.
+
+**Status:** Can test now since warm pool is disabled.
+
+---
+
+## Current Configuration
+
+### app.yaml (AFTER FIX)
 
 ```yaml
-WARM_POOL_ENABLED: "true"
+WARM_POOL_ENABLED: "false"           # DISABLED - SDK bug
 WARM_POOL_TARGET_READY: "2"
-WARM_POOL_MAX_READY: "10"
-WARM_POOL_IDLE_TIMEOUT: "120"
-WARM_POOL_MAX_CONCURRENT_CREATES: "2"
-MAX_RUNS_PER_HOUR: "25"
+WARM_POOL_MAX_READY: "3"
+WARM_POOL_IDLE_TIMEOUT: "600"
+WARM_POOL_MAX_CONCURRENT_CREATES: "1"
 ```
 
-### Pool Config (cold_service.py)
+### cold_service.py (AFTER FIX)
 
 ```python
+# Only Python pool (Node removed)
 "python": PoolConfig(
-    target_ready=target_ready,  # 2
-    max_ready=max_ready,        # 10
-    idle_timeout=idle_timeout,  # 120s
-    scale_down_delay=60,
-    max_warm_age=1800,
+    target_ready=target_ready,
+    max_ready=target_ready + 1,     # Strict limit
+    idle_timeout=600,                # 10 min
+    scale_down_delay=120,
+    max_warm_age=3600,
     on_empty="create",
 ),
-"node": PoolConfig(
-    target_ready=1,
-    max_ready=3,
-    ...
-),
-max_total_sandboxes=max_ready + 3,  # 13
+max_total_sandboxes=target_ready + 3,  # Strict global limit
+max_concurrent_creates=1,               # Serialize creations
 ```
+
+---
+
+## Priority Order (UPDATED)
+
+1. **Issue 1 (SDK Bug)** - CRITICAL - Must fix before re-enabling warm pool
+2. **Issue 4 (Games)** - MEDIUM - Test cold starts work
+3. **Issue 3 (SSE)** - LOW - Nice to have
 
 ---
 
 ## Cleanup Commands
-
-Before starting fresh testing:
 
 ```bash
 # Delete all sandbox apps
@@ -495,7 +320,10 @@ doctl apps list --format ID,Spec.Name | grep sandbox | awk '{print $1}' | xargs 
 # Verify cleanup
 doctl apps list | grep sandbox
 
-# Redeploy orchestrator (after code fixes)
+# Check orchestrator status
+curl -s "https://orchestrator-demo-3cu9r.ondigitalocean.app/api/pool/status"
+
+# Redeploy orchestrator
 doctl apps create-deployment 93325ad4-ec00-4211-862c-23489ec3e32c
 ```
 
@@ -503,11 +331,10 @@ doctl apps create-deployment 93325ad4-ec00-4211-862c-23489ec3e32c
 
 ## Success Criteria
 
-1. **Warm pool starts idle (0 sandboxes)** until first user request
-2. **Pool maintains target_ready=1** after first acquire, scales down after idle_timeout
-3. **No orphaned sandboxes** - All sandboxes tracked and cleaned up properly
-4. **All 3 games work** - Snake, Memory, Tic-Tac-Toe load and are playable
-5. **SSE logs stream** (nice to have) - Or at least main orchestrator logs work
+1. **SDK bug fixed** - Pool respects max_ready limit
+2. **Warm pool stable** - Creates exactly target_ready sandboxes, no churn
+3. **All games work** - Snake, Memory, Tic-Tac-Toe playable
+4. **SSE streaming** (nice to have) - Per-launch logs work
 
 ---
 
@@ -515,9 +342,8 @@ doctl apps create-deployment 93325ad4-ec00-4211-862c-23489ec3e32c
 
 | File | Purpose |
 |------|---------|
-| `backend/services/cold_service.py` | Pool manager config, sandbox lifecycle |
+| `backend/services/cold_service.py` | Pool manager config |
 | `backend/config.py` | Environment variable defaults |
-| `backend/main.py` | API endpoints, SSE streaming |
+| `backend/main.py` | API endpoints |
 | `.do/app.yaml` | App Platform deployment config |
-| `frontend/app/page.tsx` | Main UI, game selection |
-| `frontend/hooks/use-sse.ts` | SSE client |
+| **SDK: `sandbox_manager.py`** | **BUG LOCATION - needs debugging** |
