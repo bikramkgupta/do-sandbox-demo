@@ -37,12 +37,18 @@ EXEC_RETRY_ATTEMPTS = 5
 EXEC_RETRY_DELAY = 5  # seconds between retries
 
 
-def exec_with_retry(sandbox, command: str, timeout: int = 120, max_retries: int = EXEC_RETRY_ATTEMPTS):
-    """Execute command with retry logic for DNS propagation issues."""
+async def exec_with_retry(sandbox, command: str, timeout: int = 120, max_retries: int = EXEC_RETRY_ATTEMPTS):
+    """Execute command with retry logic for DNS propagation issues.
+
+    IMPORTANT: This is async to avoid blocking the event loop.
+    - sandbox.exec() is synchronous, so we run it in a thread pool
+    - Retries use asyncio.sleep() instead of time.sleep()
+    """
     last_error = None
     for attempt in range(max_retries):
         try:
-            return sandbox.exec(command, timeout=timeout)
+            # Run synchronous SDK call in thread pool to avoid blocking event loop
+            return await asyncio.to_thread(sandbox.exec, command, timeout=timeout)
         except (ServiceConnectionError, Exception) as e:
             last_error = e
             error_msg = str(e)
@@ -50,7 +56,7 @@ def exec_with_retry(sandbox, command: str, timeout: int = 120, max_retries: int 
             if "Name or service not known" in error_msg or "Connection" in error_msg:
                 if attempt < max_retries - 1:
                     logger.warning(f"Exec attempt {attempt + 1} failed ({error_msg}), retrying in {EXEC_RETRY_DELAY}s...")
-                    time.sleep(EXEC_RETRY_DELAY)
+                    await asyncio.sleep(EXEC_RETRY_DELAY)  # Non-blocking sleep
                     continue
             raise
     raise last_error
@@ -542,7 +548,7 @@ class SandboxService:
             self._log_orchestrator(f"Downloading snapshot: {snapshot_id}.tar.gz")
 
             # Download snapshot (with retry for DNS propagation)
-            result = exec_with_retry(
+            result = await exec_with_retry(
                 runtime.sandbox,
                 f"wget -q -O /tmp/snapshot.tar.gz {snapshot_url}",
                 timeout=60
@@ -553,7 +559,7 @@ class SandboxService:
                 # Extract snapshot
                 await self._emit(queue, runtime.add_log("Extracting snapshot..."))
                 self._log_orchestrator(f"Extracting snapshot to /workspace")
-                result = exec_with_retry(
+                result = await exec_with_retry(
                     runtime.sandbox,
                     f"cd /workspace && tar -xzf /tmp/snapshot.tar.gz",
                     timeout=30
@@ -566,7 +572,7 @@ class SandboxService:
                     await self._emit(queue, runtime.add_log("Installing dependencies..."))
                     self._log_orchestrator(f"Installing dependencies ({game_config['install']})")
                     install_cmd = game_config["install"]
-                    result = exec_with_retry(
+                    result = await exec_with_retry(
                         runtime.sandbox,
                         f"cd /workspace/{game_path} && {install_cmd}",
                         timeout=120
@@ -594,7 +600,7 @@ class SandboxService:
         self._log_orchestrator(f"Cloning repository: {GAMES_REPO}")
 
         # Clone the repo (with retry for DNS propagation)
-        result = exec_with_retry(
+        result = await exec_with_retry(
             runtime.sandbox,
             f"git clone --depth 1 {GAMES_REPO} /workspace/games",
             timeout=60
@@ -608,14 +614,14 @@ class SandboxService:
 
         # Move game to workspace
         game_path = game_config["path"]
-        exec_with_retry(runtime.sandbox, f"mv /workspace/games/{game_path} /workspace/{game_path}", timeout=30)
+        await exec_with_retry(runtime.sandbox, f"mv /workspace/games/{game_path} /workspace/{game_path}", timeout=30)
         self._log_orchestrator(f"Game files moved to /workspace/{game_path}")
 
         # Install dependencies
         await self._emit(queue, runtime.add_log(f"Installing dependencies..."))
         self._log_orchestrator(f"Installing dependencies ({game_config['install']})")
         install_cmd = game_config["install"]
-        result = exec_with_retry(
+        result = await exec_with_retry(
             runtime.sandbox,
             f"cd /workspace/{game_path} && {install_cmd}",
             timeout=120
