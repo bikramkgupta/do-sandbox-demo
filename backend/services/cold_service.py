@@ -70,11 +70,11 @@ GAME_CONFIG = {
         "port": GAME_PORT,
     },
     GameType.TIC_TAC_TOE: {
-        "image": "node",
-        "path": "tic-tac-toe",
-        "install": "npm install",
-        "run": f"PORT={GAME_PORT} npm start",
-        "snapshot_id": "tictactoe-node",
+        "image": "python",
+        "path": "tic-tac-toe-python",
+        "install": "pip install -r requirements.txt",
+        "run": f"sed -i 's/port=8080/port={GAME_PORT}/' app.py && python app.py",
+        "snapshot_id": "tictactoe-python",
         "port": GAME_PORT,
     },
     GameType.MEMORY: {
