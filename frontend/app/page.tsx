@@ -360,7 +360,9 @@ function CompactLaunchCard({
 
 // Format time remaining
 function formatTimeRemaining(expiresAt: string): string {
-  const remaining = new Date(expiresAt).getTime() - Date.now();
+  // Backend returns UTC time without Z suffix, so add it for proper parsing
+  const expiresAtUtc = expiresAt.endsWith('Z') ? expiresAt : expiresAt + 'Z';
+  const remaining = new Date(expiresAtUtc).getTime() - Date.now();
   if (remaining <= 0) return 'expiring...';
   const mins = Math.floor(remaining / 60000);
   const secs = Math.floor((remaining % 60000) / 1000);
