@@ -1,7 +1,7 @@
-# Orchestrator Demo - Remaining Task
+# Orchestrator Demo
 
-**App URL:** https://orchestrator-demo-3cu9r.ondigitalocean.app/
-**App ID:** 93325ad4-ec00-4211-862c-23489ec3e32c
+**App URL:** https://orchestrator-demo-bh5qp.ondigitalocean.app/
+**App ID:** f082ab70-a6b1-4090-bf08-26409faed1db
 
 ---
 
@@ -14,110 +14,20 @@
 - ✅ Time remaining countdown for active sandboxes
 - ✅ Deleted sandboxes persist to backend (survives refresh)
 - ✅ Rate limiting working (3 cold, 3 warm, 25/hour)
+- ✅ Warm pool enabled (SDK 0.2.2 fix applied)
 
 ---
 
-## CRITICAL: SDK SandboxManager Bug (BLOCKING WARM POOL)
+## RESOLVED: SDK SandboxManager Bug
 
-### Status: PENDING - Needs SDK Fix
+**Root cause:** Race condition between periodic health check and replenish loop.
+Health check drained the queue temporarily → replenish saw `ready_count=0` → created duplicates.
 
-The warm pool is **disabled** (`WARM_POOL_ENABLED: "false"`) due to a confirmed SDK bug.
+**Fix:** Removed periodic health check entirely (do-app-sandbox 0.2.2). Lazy health check on acquire is sufficient.
 
-### Problem
-
-The `do-app-sandbox` SDK's `SandboxManager` creates sandboxes in an infinite loop:
-
-1. **Does not respect `max_ready` limit** - Creates 5+ sandboxes when max_ready=3
-2. **Does not properly track sandboxes** - Metrics fluctuate wildly
-3. **Continuously creates sandboxes** - Even when above target_ready
-
-### Evidence (2026-01-12)
-
-**Runaway creation observed:**
-- Pool grew from 6 → 11 → 13+ sandboxes despite `max_ready=5`
-- `doctl apps list | grep sandbox` showed 9 → 13 apps in seconds
-- Had to delete the entire app to stop the runaway creation
-
-```
-Pool: 6 / 3 +1   ← ready=6 exceeds max_ready!
-Pool: 11 / 3 +2  ← Still creating despite being WAY over limit!
-```
-
-**Environment was correctly configured:**
-```
-WARM_POOL_TARGET_READY=3
-WARM_POOL_MAX_READY=5
-WARM_POOL_MAX_CONCURRENT_CREATES=1
-```
-
-### SDK Location
-
-**Repository:** https://github.com/bikramkgupta/do-app-sandbox
-**Key file:** `do_app_sandbox/sandbox_manager.py`
-
-### Debugging Steps
-
-1. Clone SDK and add debug logging to pool management
-2. Run minimal reproduction script (see below)
-3. Check for race conditions in background tasks
-4. Look for missing mutex around scaling logic
-
-### Minimal Reproduction Script
-
-```python
-#!/usr/bin/env python3
-"""Run OUTSIDE orchestrator to isolate the issue."""
-import asyncio
-import os
-from datetime import datetime
-from do_app_sandbox import SandboxManager, PoolConfig, SandboxMode
-
-async def test_pool_stability():
-    manager = SandboxManager(
-        pools={
-            "python": PoolConfig(
-                target_ready=2,
-                max_ready=3,
-                idle_timeout=600,
-                on_empty="create",
-            ),
-        },
-        max_total_sandboxes=5,
-        max_concurrent_creates=1,
-        sandbox_defaults={
-            "region": "syd",
-            "api_token": os.environ["DIGITALOCEAN_TOKEN"],
-            "mode": SandboxMode.SERVICE,
-        },
-    )
-
-    await manager.start()
-
-    # Monitor for 5 minutes - should stabilize at 2-3, never exceed 3
-    for i in range(30):
-        metrics = manager.metrics()
-        pool = metrics.get("python", {})
-        ready = pool.get("ready", 0)
-        creating = pool.get("creating", 0)
-
-        issues = []
-        if ready > 3: issues.append(f"READY EXCEEDS MAX!")
-        if creating > 1: issues.append(f"CONCURRENT CREATES EXCEEDS LIMIT!")
-
-        print(f"[{i*10:3d}s] ready={ready}, creating={creating} | {' '.join(issues) or 'OK'}")
-        await asyncio.sleep(10)
-
-    await manager.shutdown()
-
-if __name__ == "__main__":
-    asyncio.run(test_pool_stability())
-```
-
-### Potential Fixes
-
-1. Add mutex around pool scaling logic
-2. Add reconciliation with DO API (fetch actual apps, compare with tracked)
-3. Add strict limit enforcement before any creation
+**GitHub Issues:**
+- https://github.com/bikramkgupta/do-app-sandbox/issues/22 (bug)
+- https://github.com/bikramkgupta/do-app-sandbox/issues/23 (scale review)
 
 ---
 
@@ -128,16 +38,8 @@ if __name__ == "__main__":
 doctl apps list --format ID,Spec.Name | grep sandbox | awk '{print $1}' | xargs -I {} doctl apps delete {} --force
 
 # Check pool status
-curl -s "https://orchestrator-demo-3cu9r.ondigitalocean.app/api/pool/status"
+curl -s "https://orchestrator-demo-bh5qp.ondigitalocean.app/api/pool/status"
 
 # Redeploy
-doctl apps create-deployment 93325ad4-ec00-4211-862c-23489ec3e32c
+doctl apps create-deployment f082ab70-a6b1-4090-bf08-26409faed1db
 ```
-
----
-
-## Success Criteria
-
-1. SDK bug fixed - Pool respects max_ready limit
-2. Warm pool stable - Creates exactly target_ready sandboxes, no churn
-3. Re-enable `WARM_POOL_ENABLED: "true"` in app.yaml
