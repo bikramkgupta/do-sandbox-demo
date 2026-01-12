@@ -161,14 +161,14 @@ function PoolStatusBadge() {
   const isReady = poolStatus.ready > 0;
 
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-do-darker border border-white/5">
+    <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-do-darker border border-white/5" title="Warm pool: pre-warmed sandboxes ready for instant use">
       <Database className="w-3.5 h-3.5 text-do-purple" />
       <span className="text-xs text-gray-400">Pool:</span>
       <span className={`text-xs font-mono font-medium ${isReady ? 'text-do-green' : isWarming ? 'text-do-blue' : 'text-gray-500'}`}>
         {poolStatus.ready}
       </span>
       <span className="text-xs text-gray-600">/</span>
-      <span className="text-xs font-mono text-gray-400">2</span>
+      <span className="text-xs font-mono text-gray-400">3</span>
       {isWarming && (
         <span className="text-xs text-do-blue animate-pulse">
           +{poolStatus.creating}
@@ -195,7 +195,7 @@ function StatsBar({
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 glass rounded-lg">
       <div className="flex items-center gap-4">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2" title="Launches this hour (resets hourly)">
           <Activity className="w-4 h-4 text-do-cyan" />
           <span className="text-xs text-gray-400">Rate:</span>
           <span className={`text-xs font-mono font-medium ${rate.used >= rate.limit ? 'text-do-red' : 'text-white'}`}>
@@ -211,13 +211,13 @@ function StatsBar({
         <div className="h-4 w-px bg-white/10" />
 
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5" title="Active cold sandboxes">
             <Turtle className="w-3.5 h-3.5 text-orange-400" />
-            <span className="text-xs font-mono text-white">{active.cold}/2</span>
+            <span className="text-xs font-mono text-white">{active.cold}/3</span>
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5" title="Active warm sandboxes">
             <Zap className="w-3.5 h-3.5 text-yellow-400" />
-            <span className="text-xs font-mono text-white">{active.warm}/2</span>
+            <span className="text-xs font-mono text-white">{active.warm}/3</span>
           </div>
         </div>
       </div>
@@ -247,7 +247,8 @@ function CompactLaunchCard({
   const isFailed = sandbox.status === 'failed';
   const isDeleted = sandbox.status === 'deleted';
   const isIdle = sandbox.status === 'idle';
-  const canLaunch = isIdle || isDeleted || isFailed;
+  // Allow launching when idle, deleted, failed, OR running (to launch another)
+  const canLaunch = isIdle || isDeleted || isFailed || isRunning;
 
   // Elapsed timer
   useEffect(() => {
@@ -316,7 +317,7 @@ function CompactLaunchCard({
           ))}
         </select>
 
-        <label className="flex items-center gap-2 cursor-pointer">
+        <label className="flex items-center gap-2 cursor-pointer" title={useSnapshot ? "Using snapshot (faster)" : "Building from GitHub (slower)"}>
           <input
             type="checkbox"
             checked={useSnapshot}
@@ -407,7 +408,7 @@ function SandboxListItem({
                   : 'bg-do-red/20 text-do-red'
               }`}
             >
-              {isExpired ? 'expired' : sandbox.status || 'unknown'}
+              {isExpired ? 'deleted' : sandbox.status || 'unknown'}
             </span>
           </div>
           {sandbox.bootstrap_ms && (
@@ -492,7 +493,7 @@ function SandboxList({
       {expiredSandboxes.length > 0 && (
         <div>
           <h3 className="text-sm font-medium text-gray-500 mb-3">
-            Recently Expired ({expiredSandboxes.length})
+            Recently Deleted ({expiredSandboxes.length})
           </h3>
           <div className="space-y-2">
             {expiredSandboxes.map((sandbox) => (
@@ -567,8 +568,28 @@ export default function Home() {
 
   const handleDelete = async (runId: string) => {
     try {
+      // Find sandbox info before deletion to add to expired list
+      const sandboxInfo = status?.active?.find((s) => s.run_id === runId);
+
       const { deleteSandbox } = await import('@/lib/api');
       await deleteSandbox(runId);
+
+      // Add to expired list after successful deletion
+      if (sandboxInfo) {
+        setExpiredSandboxes((prev) => {
+          if (prev.some((s) => s.run_id === runId)) return prev;
+          return [
+            {
+              run_id: runId,
+              type: sandboxInfo.type,
+              game: sandboxInfo.game,
+              bootstrap_ms: sandboxInfo.bootstrap_ms,
+            },
+            ...prev,
+          ].slice(0, 5);
+        });
+      }
+
       refresh();
     } catch (e) {
       console.error('Failed to delete sandbox:', e);
@@ -624,7 +645,7 @@ export default function Home() {
         {/* Footer */}
         <div className="text-center text-gray-600 text-sm mt-8">
           <p>
-            Sandboxes auto-delete after 3-6 minutes. Max 25 launches per hour.
+            Sandboxes auto-delete after 5-10 minutes. Max 3 cold + 3 warm sandboxes in parallel. Max 25 launches/hour.
           </p>
           <p className="mt-1 text-xs">
             Games from{' '}
