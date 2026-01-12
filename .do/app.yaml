@@ -23,18 +23,23 @@ services:
       - key: DIGITALOCEAN_TOKEN
         scope: RUN_TIME
         type: SECRET
+        value: ${DIGITALOCEAN_TOKEN}
       - key: SPACES_BUCKET
         scope: RUN_TIME
         type: SECRET
+        value: ${SPACES_BUCKET}
       - key: SPACES_REGION
         scope: RUN_TIME
         type: SECRET
+        value: ${SPACES_REGION}
       - key: SPACES_ACCESS_KEY
         scope: RUN_TIME
         type: SECRET
+        value: ${SPACES_ACCESS_KEY}
       - key: SPACES_SECRET_KEY
         scope: RUN_TIME
         type: SECRET
+        value: ${SPACES_SECRET_KEY}
       # Rate limiting - orchestrator guardrails
       - key: MAX_CONCURRENT_COLD
         scope: RUN_TIME

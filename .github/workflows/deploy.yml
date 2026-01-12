@@ -1,0 +1,38 @@
+name: Deploy to App Platform
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'production' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy to App Platform
+        uses: digitalocean/app_action/deploy@v2
+        env:
+          # Secrets for the sandbox SDK and Spaces storage
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          SPACES_BUCKET: ${{ secrets.SPACES_BUCKET }}
+          SPACES_REGION: ${{ secrets.SPACES_REGION }}
+          SPACES_ACCESS_KEY: ${{ secrets.SPACES_ACCESS_KEY }}
+          SPACES_SECRET_KEY: ${{ secrets.SPACES_SECRET_KEY }}
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
