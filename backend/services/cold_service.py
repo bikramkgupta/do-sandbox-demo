@@ -32,8 +32,7 @@ from do_app_sandbox.exceptions import ServiceConnectionError
 # GitHub repo for games
 GAMES_REPO = "https://github.com/bikramkgupta/do-sandbox-games.git"
 
-# DNS propagation can take time after sandbox creation
-DNS_PROPAGATION_DELAY = 15  # seconds to wait after sandbox is ready
+# Retry settings for exec commands (handles transient connection issues)
 EXEC_RETRY_ATTEMPTS = 5
 EXEC_RETRY_DELAY = 5  # seconds between retries
 
@@ -454,13 +453,8 @@ class SandboxService:
             await self._emit(queue, runtime.add_log(f"App ID: {sandbox.app_id}"))
             self._log_orchestrator(f"Sandbox {sandbox.app_id} ready in {bootstrap_ms}ms")
 
-            # Wait for DNS propagation before trying to connect
-            await self._emit(queue, runtime.add_log(f"Waiting {DNS_PROPAGATION_DELAY}s for DNS propagation..."))
-            self._log_orchestrator(f"Waiting {DNS_PROPAGATION_DELAY}s for DNS propagation")
-            await asyncio.sleep(DNS_PROPAGATION_DELAY)
-            self._log_orchestrator(f"DNS propagation complete, proceeding with deployment")
-
             # Step 2: Deploy game (snapshot or git clone)
+            # Note: exec_with_retry handles transient connection issues
             restore_start = time.time()
 
             if runtime.use_snapshot:
