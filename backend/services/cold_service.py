@@ -704,6 +704,12 @@ class SandboxService:
 
         try:
             if runtime.sandbox:
+                # Release from pool tracking to decrement in_use_count
+                # This is critical - without it, the pool's global limit accumulates
+                if self._pool_manager and runtime.sandbox_type == SandboxType.WARM:
+                    game_config = GAME_CONFIG.get(runtime.game, {})
+                    image = game_config.get("image", "python")
+                    self._pool_manager.release(runtime.sandbox, image)
                 runtime.sandbox.delete()
                 self._log_orchestrator(f"Sandbox {run_id_str[:8]} DO app deleted successfully")
         except Exception as e:
