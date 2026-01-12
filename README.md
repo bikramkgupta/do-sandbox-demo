@@ -7,8 +7,8 @@ Interactive demo showcasing DigitalOcean App Platform Sandbox capabilities - com
 - **Cold Start vs Warm Pool Comparison**: Side-by-side view of sandbox provisioning speeds
 - **Snapshot Toggle**: Switch between restoring from Spaces snapshots (~faster) or cloning from GitHub (~slower)
 - **Live Logs**: Real-time SSE streaming of sandbox creation progress
-- **Rate Limiting**: Built-in protection (max 2 cold, max 2 warm, max 10/hour)
-- **Auto-cleanup**: Sandboxes automatically deleted after 3-6 minutes
+- **Rate Limiting**: Built-in protection (max 3 cold, max 3 warm, max 25/hour)
+- **Auto-cleanup**: Sandboxes automatically deleted after 5-10 minutes
 - **Mini Games**: Snake, Tic-Tac-Toe, and Memory games to demonstrate real applications
 
 ## Architecture
@@ -89,7 +89,7 @@ This clones the games repo and uploads tar.gz archives to your Spaces bucket.
 - **Frontend**: Next.js 14, TypeScript, Tailwind CSS
 - **Backend**: FastAPI, Python 3.12, SSE-Starlette
 - **Database**: PostgreSQL 16
-- **SDK**: do-app-sandbox (>=0.2.1)
+- **SDK**: do-app-sandbox (>=0.2.2)
 
 ## Deployment
 
