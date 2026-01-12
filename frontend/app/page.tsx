@@ -376,17 +376,19 @@ function ExpandedLaunchPanel({
   const isRunning = sandbox.status === 'running';
   const isCreating = sandbox.status === 'creating' || sandbox.isLaunching;
   const isFailed = sandbox.status === 'failed';
+  const isDeleted = sandbox.status === 'deleted';
   const isIdle = sandbox.status === 'idle';
+  const isFinished = isRunning || isFailed || isDeleted;
 
-  // Elapsed timer
+  // Elapsed timer - stops when sandbox is ready, failed, or deleted
   useEffect(() => {
-    if (!isCreating) return;
+    if (!isCreating || isFinished) return;
     const start = Date.now();
     const interval = setInterval(() => {
       setElapsed(Date.now() - start);
     }, 100);
     return () => clearInterval(interval);
-  }, [isCreating]);
+  }, [isCreating, isFinished]);
 
   // Auto-switch tabs based on progress
   useEffect(() => {
@@ -526,6 +528,13 @@ function ExpandedLaunchPanel({
                   <span className="text-xs text-gray-500">{sandbox.error}</span>
                 </div>
               )}
+
+              {isDeleted && (
+                <div className="flex items-center gap-2 text-gray-400">
+                  <span className="text-sm font-medium">Sandbox Expired</span>
+                  <span className="text-xs text-gray-500">Auto-deleted after timeout</span>
+                </div>
+              )}
             </div>
 
             <div className="flex items-center gap-2">
@@ -538,20 +547,23 @@ function ExpandedLaunchPanel({
                   Delete
                 </button>
               )}
-              {isIdle && (
+              {(isIdle || isDeleted || isFailed) && (
                 <button
-                  onClick={onLaunch}
+                  onClick={() => {
+                    sandbox.reset();
+                    onLaunch();
+                  }}
                   className="flex items-center gap-2 px-4 py-2 bg-do-blue text-white rounded-lg font-medium hover:bg-do-blue-dim transition-colors"
                 >
                   <Play className="w-4 h-4" />
-                  Launch {isCold ? 'Cold' : 'Warm'}
+                  {isDeleted || isFailed ? 'Launch Again' : `Launch ${isCold ? 'Cold' : 'Warm'}`}
                 </button>
               )}
             </div>
           </div>
 
           {/* Progress bar */}
-          {isCreating && (
+          {isCreating && !isFinished && (
             <div className="mt-3 h-1 bg-do-darker rounded-full overflow-hidden">
               <div
                 className="h-full bg-do-blue animate-stripes transition-all duration-300"
@@ -572,23 +584,31 @@ function LaunchCard({
   type,
   isExpanded,
   onExpand,
+  sandbox,
+  selectedGame,
+  setSelectedGame,
+  useSnapshot,
+  setUseSnapshot,
+  onLaunch,
 }: {
   type: SandboxType;
   isExpanded: boolean;
   onExpand: () => void;
+  sandbox: ReturnType<typeof useSandbox>;
+  selectedGame: GameType;
+  setSelectedGame: (game: GameType) => void;
+  useSnapshot: boolean;
+  setUseSnapshot: (v: boolean) => void;
+  onLaunch: () => void;
 }) {
-  const sandbox = useSandbox(type);
-  const [selectedGame, setSelectedGame] = useState<GameType>('snake');
-  const [useSnapshot, setUseSnapshot] = useState(true);
-
   const isCold = type === 'cold';
   const isRunning = sandbox.status === 'running';
   const isCreating = sandbox.status === 'creating' || sandbox.isLaunching;
 
   const handleLaunch = useCallback(() => {
-    sandbox.launch(selectedGame, useSnapshot);
+    onLaunch();
     onExpand();
-  }, [sandbox, selectedGame, useSnapshot, onExpand]);
+  }, [onLaunch, onExpand]);
 
   // Auto-expand when launching
   useEffect(() => {
@@ -759,8 +779,11 @@ export default function Home() {
   const [expandedType, setExpandedType] = useState<SandboxType | null>(null);
   const coldSandbox = useSandbox('cold');
   const warmSandbox = useSandbox('warm');
-  const [selectedGame, setSelectedGame] = useState<GameType>('snake');
-  const [useSnapshot, setUseSnapshot] = useState(true);
+  // Separate state per sandbox type
+  const [coldSelectedGame, setColdSelectedGame] = useState<GameType>('snake');
+  const [coldUseSnapshot, setColdUseSnapshot] = useState(true);
+  const [warmSelectedGame, setWarmSelectedGame] = useState<GameType>('snake');
+  const [warmUseSnapshot, setWarmUseSnapshot] = useState(true);
 
   // Refresh status periodically
   useEffect(() => {
@@ -774,6 +797,10 @@ export default function Home() {
   }, []);
 
   const currentSandbox = expandedType === 'cold' ? coldSandbox : warmSandbox;
+  const selectedGame = expandedType === 'cold' ? coldSelectedGame : warmSelectedGame;
+  const setSelectedGame = expandedType === 'cold' ? setColdSelectedGame : setWarmSelectedGame;
+  const useSnapshot = expandedType === 'cold' ? coldUseSnapshot : warmUseSnapshot;
+  const setUseSnapshot = expandedType === 'cold' ? setColdUseSnapshot : setWarmUseSnapshot;
 
   return (
     <main className="min-h-screen grid-pattern noise-overlay">
@@ -840,11 +867,23 @@ export default function Home() {
                 type="cold"
                 isExpanded={false}
                 onExpand={() => setExpandedType('cold')}
+                sandbox={coldSandbox}
+                selectedGame={coldSelectedGame}
+                setSelectedGame={setColdSelectedGame}
+                useSnapshot={coldUseSnapshot}
+                setUseSnapshot={setColdUseSnapshot}
+                onLaunch={() => coldSandbox.launch(coldSelectedGame, coldUseSnapshot)}
               />
               <LaunchCard
                 type="warm"
                 isExpanded={false}
                 onExpand={() => setExpandedType('warm')}
+                sandbox={warmSandbox}
+                selectedGame={warmSelectedGame}
+                setSelectedGame={setWarmSelectedGame}
+                useSnapshot={warmUseSnapshot}
+                setUseSnapshot={setWarmUseSnapshot}
+                onLaunch={() => warmSandbox.launch(warmSelectedGame, warmUseSnapshot)}
               />
             </div>
           )}

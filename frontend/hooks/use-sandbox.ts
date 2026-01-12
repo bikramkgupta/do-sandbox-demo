@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useCallback } from 'react';
-import { launchSandbox, deleteSandbox, getStatus } from '@/lib/api';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { launchSandbox, deleteSandbox, getStatus, getSandbox } from '@/lib/api';
 import { SandboxType, GameType, SandboxInfo, StatusResponse, SSEEvent } from '@/lib/types';
 import { useSSE } from './use-sse';
 
@@ -18,7 +18,7 @@ interface LaunchState {
   runId: string | null;
   streamUrl: string | null;
   error: string | null;
-  status: 'idle' | 'creating' | 'running' | 'failed' | 'completed';
+  status: 'idle' | 'creating' | 'running' | 'failed' | 'completed' | 'deleted';
   ingressUrl: string | null;
   elapsedMs: number;
   bootstrapMs: number | null;
@@ -42,6 +42,7 @@ const initialLaunchState: LaunchState = {
 export function useSandbox(type: SandboxType) {
   const [state, setState] = useState<LaunchState>(initialLaunchState);
   const [startTime, setStartTime] = useState<number | null>(null);
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Update elapsed time
   const updateElapsed = useCallback(() => {
@@ -55,6 +56,7 @@ export function useSandbox(type: SandboxType) {
 
   // Handle SSE events
   const handleEvent = useCallback((event: SSEEvent) => {
+    console.log('[useSandbox] SSE event received:', event.type);
     if (event.type === 'log') {
       setState((prev) => ({
         ...prev,
@@ -68,6 +70,7 @@ export function useSandbox(type: SandboxType) {
       }));
     } else if (event.type === 'ready') {
       const readyEvent = event as any;
+      console.log('[useSandbox] Sandbox ready!', readyEvent);
       setState((prev) => ({
         ...prev,
         status: 'running',
@@ -81,10 +84,72 @@ export function useSandbox(type: SandboxType) {
   }, []);
 
   // SSE connection
-  const { connected, disconnect } = useSSE(
+  const { connected, disconnect, connectionError } = useSSE(
     state.streamUrl,
     { onEvent: handleEvent }
   );
+
+  // Polling fallback - check sandbox status periodically when SSE might not be working
+  useEffect(() => {
+    // Only poll when we have a runId and status is 'creating'
+    if (!state.runId || state.status !== 'creating') {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+      return;
+    }
+
+    // Start polling after 5 seconds (give SSE time to connect)
+    const startPolling = setTimeout(() => {
+      pollIntervalRef.current = setInterval(async () => {
+        try {
+          const sandbox = await getSandbox(state.runId!);
+          if (!sandbox) {
+            // Sandbox was deleted/expired
+            console.log('[useSandbox] Sandbox not found (deleted or expired)');
+            setState((prev) => ({
+              ...prev,
+              status: 'deleted',
+              isLaunching: false,
+              logs: [...prev.logs, 'Sandbox expired or was deleted'],
+            }));
+            return;
+          }
+
+          if (sandbox.status === 'running' && sandbox.ingress_url) {
+            console.log('[useSandbox] Polling detected sandbox is ready');
+            setState((prev) => ({
+              ...prev,
+              status: 'running',
+              ingressUrl: sandbox.ingress_url || null,
+              bootstrapMs: sandbox.bootstrap_ms || null,
+              restoreMs: sandbox.restore_ms || null,
+              isLaunching: false,
+              logs: [...prev.logs, `Game ready at: ${sandbox.ingress_url}`],
+            }));
+          } else if (sandbox.status === 'failed') {
+            setState((prev) => ({
+              ...prev,
+              status: 'failed',
+              isLaunching: false,
+              logs: [...prev.logs, 'Sandbox creation failed'],
+            }));
+          }
+        } catch (e) {
+          console.warn('[useSandbox] Poll error:', e);
+        }
+      }, 3000); // Poll every 3 seconds
+    }, 5000); // Wait 5 seconds before starting to poll
+
+    return () => {
+      clearTimeout(startPolling);
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+    };
+  }, [state.runId, state.status]);
 
   // Launch sandbox
   const launch = useCallback(async (game: GameType, useSnapshot: boolean = true) => {

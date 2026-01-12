@@ -650,7 +650,7 @@ class SandboxService:
                 # Send keepalive
                 yield {"type": "keepalive"}
 
-    async def delete(self, run_id: UUID) -> bool:
+    async def delete(self, run_id: UUID, reason: str = "user request") -> bool:
         """Delete a sandbox and clean up resources."""
         run_id_str = str(run_id)
 
@@ -658,11 +658,15 @@ class SandboxService:
         if not runtime:
             return False
 
+        # Log deletion to orchestrator
+        self._log_orchestrator(f"Deleting sandbox {run_id_str[:8]} ({runtime.game.value}) - reason: {reason}")
+
         try:
             if runtime.sandbox:
                 runtime.sandbox.delete()
-        except Exception:
-            pass  # Best effort cleanup
+                self._log_orchestrator(f"Sandbox {run_id_str[:8]} DO app deleted successfully")
+        except Exception as e:
+            self._log_orchestrator(f"Sandbox {run_id_str[:8]} deletion error: {e}", level="warning")
 
         # Clean up tracking
         self._active_sandboxes.pop(run_id_str, None)
@@ -693,10 +697,13 @@ class SandboxService:
 
         for run_id, runtime in self._active_sandboxes.items():
             if runtime.expires_at and runtime.expires_at <= now:
-                expired.append(UUID(run_id))
+                expired.append((UUID(run_id), runtime.game.value))
 
-        for run_id in expired:
-            await self.delete(run_id)
+        if expired:
+            self._log_orchestrator(f"Auto-cleanup: {len(expired)} sandbox(es) expired")
+
+        for run_id, game in expired:
+            await self.delete(run_id, reason=f"expired (auto-cleanup after {config.SANDBOX_MIN_LIFETIME_MINUTES}-{config.SANDBOX_MAX_LIFETIME_MINUTES} min)")
 
         return len(expired)
 
