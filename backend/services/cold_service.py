@@ -453,7 +453,9 @@ class SandboxService:
 
             # Wait for DNS propagation before trying to connect
             await self._emit(queue, runtime.add_log(f"Waiting {DNS_PROPAGATION_DELAY}s for DNS propagation..."))
+            self._log_orchestrator(f"Waiting {DNS_PROPAGATION_DELAY}s for DNS propagation")
             await asyncio.sleep(DNS_PROPAGATION_DELAY)
+            self._log_orchestrator(f"DNS propagation complete, proceeding with deployment")
 
             # Step 2: Deploy game (snapshot or git clone)
             restore_start = time.time()
@@ -540,6 +542,7 @@ class SandboxService:
         if config.SPACES_BUCKET and config.SPACES_REGION:
             snapshot_url = f"https://{config.SPACES_BUCKET}.{config.SPACES_REGION}.digitaloceanspaces.com/snapshots/{snapshot_id}.tar.gz"
             await self._emit(queue, runtime.add_log(f"Downloading snapshot: {snapshot_id}"))
+            self._log_orchestrator(f"Downloading snapshot: {snapshot_id}.tar.gz")
 
             # Download snapshot (with retry for DNS propagation)
             result = exec_with_retry(
@@ -549,8 +552,10 @@ class SandboxService:
             )
 
             if result.success:
+                self._log_orchestrator(f"Snapshot downloaded successfully")
                 # Extract snapshot
                 await self._emit(queue, runtime.add_log("Extracting snapshot..."))
+                self._log_orchestrator(f"Extracting snapshot to /workspace")
                 result = exec_with_retry(
                     runtime.sandbox,
                     f"cd /workspace && tar -xzf /tmp/snapshot.tar.gz",
@@ -558,9 +563,11 @@ class SandboxService:
                 )
                 if result.success:
                     await self._emit(queue, runtime.add_log("Snapshot restored successfully"))
+                    self._log_orchestrator(f"Snapshot extracted successfully")
 
                     # Still need to install deps (snapshots contain code, not installed deps)
                     await self._emit(queue, runtime.add_log("Installing dependencies..."))
+                    self._log_orchestrator(f"Installing dependencies ({game_config['install']})")
                     install_cmd = game_config["install"]
                     result = exec_with_retry(
                         runtime.sandbox,
@@ -569,13 +576,17 @@ class SandboxService:
                     )
                     if not result.success:
                         await self._emit(queue, runtime.add_log(f"Warning: {result.stderr}"))
+                        self._log_orchestrator(f"Dependency warning: {result.stderr[:100]}", level="warning")
 
                     await self._emit(queue, runtime.add_log("Dependencies installed"))
+                    self._log_orchestrator(f"Dependencies installed successfully")
                     return
                 else:
                     await self._emit(queue, runtime.add_log(f"Extract failed: {result.stderr}"))
+                    self._log_orchestrator(f"Snapshot extract failed: {result.stderr[:100]}", level="error")
             else:
                 await self._emit(queue, runtime.add_log("Snapshot not found, falling back to GitHub..."))
+                self._log_orchestrator(f"Snapshot not found, falling back to GitHub", level="warning")
 
         # Fallback to git clone if snapshot not available
         await self._deploy_from_github(runtime, queue, game_config)
@@ -583,6 +594,7 @@ class SandboxService:
     async def _deploy_from_github(self, runtime: SandboxRuntime, queue, game_config: dict) -> None:
         """Deploy game by cloning from GitHub."""
         await self._emit(queue, runtime.add_log(f"Cloning from {GAMES_REPO}..."))
+        self._log_orchestrator(f"Cloning repository: {GAMES_REPO}")
 
         # Clone the repo (with retry for DNS propagation)
         result = exec_with_retry(
@@ -591,16 +603,20 @@ class SandboxService:
             timeout=60
         )
         if not result.success:
+            self._log_orchestrator(f"Git clone failed: {result.stderr[:100]}", level="error")
             raise Exception(f"Git clone failed: {result.stderr}")
 
         await self._emit(queue, runtime.add_log("Repository cloned"))
+        self._log_orchestrator(f"Repository cloned successfully")
 
         # Move game to workspace
         game_path = game_config["path"]
         exec_with_retry(runtime.sandbox, f"mv /workspace/games/{game_path} /workspace/{game_path}", timeout=30)
+        self._log_orchestrator(f"Game files moved to /workspace/{game_path}")
 
         # Install dependencies
         await self._emit(queue, runtime.add_log(f"Installing dependencies..."))
+        self._log_orchestrator(f"Installing dependencies ({game_config['install']})")
         install_cmd = game_config["install"]
         result = exec_with_retry(
             runtime.sandbox,
@@ -609,8 +625,10 @@ class SandboxService:
         )
         if not result.success:
             await self._emit(queue, runtime.add_log(f"Warning: {result.stderr}"))
+            self._log_orchestrator(f"Dependency warning: {result.stderr[:100]}", level="warning")
 
         await self._emit(queue, runtime.add_log("Dependencies installed"))
+        self._log_orchestrator(f"Dependencies installed successfully")
 
     async def _emit(self, queue: Optional[asyncio.Queue], event) -> None:
         """Emit event to queue if it exists."""
