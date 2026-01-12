@@ -11,6 +11,16 @@ This document captures critical issues that need to be fixed in the Orchestrator
 
 ## CURRENT STATUS (2026-01-12)
 
+### Cold Start UX Issues: FIXED ✅
+
+Fixed multiple UX issues with cold start flow (commit b6c2c93):
+
+1. **Double-launch bug** - Fixed by sharing sandbox state between components
+2. **SSE streaming** - Added polling fallback when SSE doesn't work
+3. **Timer keeps running** - Now stops when sandbox is ready/failed/deleted
+4. **No deletion logging** - Added orchestrator logs for sandbox deletion with reason
+5. **Show deactivated sandboxes** - Added 'deleted' status and "Launch Again" button
+
 ### Warm Pool: DISABLED
 
 The warm pool has been **disabled** due to a confirmed SDK bug. All games now use cold starts (~30-45s).
