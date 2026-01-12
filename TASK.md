@@ -9,7 +9,7 @@ This document captures critical issues that need to be fixed in the Orchestrator
 
 ---
 
-## CURRENT STATUS (2026-01-11)
+## CURRENT STATUS (2026-01-12)
 
 ### Warm Pool: DISABLED
 
@@ -19,6 +19,16 @@ The warm pool has been **disabled** due to a confirmed SDK bug. All games now us
 # .do/app.yaml
 WARM_POOL_ENABLED: "false"  # DISABLED - SDK bug causes infinite sandbox creation
 ```
+
+### All Games: WORKING (Python)
+
+All 3 games converted to Python and tested:
+
+| Game | Runtime | Snapshot | Cold Start Time | Status |
+|------|---------|----------|-----------------|--------|
+| Snake | Python | `snake-python` | ~66s | ✅ Working |
+| Memory | Python | `memory-python` | ~66s | ✅ Working |
+| Tic-Tac-Toe | Python | `tictactoe-python` | ~44s | ✅ Working |
 
 ### Root Cause: CONFIRMED SDK BUG
 
@@ -56,6 +66,8 @@ DO Apps: 6 sandboxes
 ---
 
 ## Issue 1: SDK SandboxManager Bug (CRITICAL - BLOCKING)
+
+### Status: PENDING - Needs SDK Fix
 
 ### Problem Statement
 
@@ -248,34 +260,80 @@ if __name__ == "__main__":
 
 ---
 
-## Issue 2: Node Pool Removed (DONE)
+## Issue 2: All Games Converted to Python (DONE ✅)
 
-The Node pool has been removed from the configuration. Only Python pool remains (when re-enabled).
+### Status: COMPLETED
 
-- Tic-Tac-Toe game will use cold start
-- Snake and Memory will use warm pool (when fixed)
+All games now use Python/Flask for consistency:
+
+| Game | Before | After |
+|------|--------|-------|
+| Snake | Python | Python (no change) |
+| Memory | Python | Python (no change) |
+| Tic-Tac-Toe | Node.js | **Python** (converted) |
+
+### Changes Made
+
+1. **Created `tic-tac-toe-python/`** in games repo with:
+   - `app.py` - Flask server
+   - `requirements.txt` - Flask dependency
+   - `templates/index.html` - Game HTML
+
+2. **Uploaded snapshot** to Spaces:
+   - `s3://demo-app-sandbox-python/snapshots/tictactoe-python.tar.gz`
+
+3. **Updated orchestrator** (`cold_service.py`):
+   ```python
+   GameType.TIC_TAC_TOE: {
+       "image": "python",
+       "path": "tic-tac-toe-python",
+       "install": "pip install -r requirements.txt",
+       "run": f"sed -i 's/port=8080/port={GAME_PORT}/' app.py && python app.py",
+       "snapshot_id": "tictactoe-python",
+       "port": GAME_PORT,
+   }
+   ```
+
+### Benefits
+
+- Single runtime (Python) simplifies warm pool configuration
+- Faster cold starts for Tic-Tac-Toe (44s vs 68s)
+- Consistent deployment process for all games
 
 ---
 
 ## Issue 3: SSE Log Streaming (LOW PRIORITY)
 
+### Status: DEFERRED
+
 Per-launch SSE streaming is broken. Main orchestrator logs work.
 
-**Status:** Deferred until SDK bug is fixed.
+**Deferred until SDK bug is fixed.**
 
 ---
 
-## Issue 4: Game Verification (MEDIUM PRIORITY)
+## Issue 4: Game Verification (DONE ✅)
 
-All 3 games need testing with cold starts.
+### Status: COMPLETED
 
-**Status:** Can test now since warm pool is disabled.
+All 3 games tested and working with cold starts:
+
+```
+=== Memory Game ===
+READY: memory sandbox in 66279ms (bootstrap: 44531ms, deploy: 6001ms)
+
+=== Tic-Tac-Toe (Node.js - before conversion) ===
+READY: tic-tac-toe sandbox in 67722ms (bootstrap: 44938ms, deploy: 7094ms)
+
+=== Tic-Tac-Toe (Python - after conversion) ===
+READY: tic-tac-toe sandbox in 44256ms (bootstrap: 22556ms, deploy: 5962ms)
+```
 
 ---
 
 ## Current Configuration
 
-### app.yaml (AFTER FIX)
+### app.yaml
 
 ```yaml
 WARM_POOL_ENABLED: "false"           # DISABLED - SDK bug
@@ -285,20 +343,26 @@ WARM_POOL_IDLE_TIMEOUT: "600"
 WARM_POOL_MAX_CONCURRENT_CREATES: "1"
 ```
 
-### cold_service.py (AFTER FIX)
+### cold_service.py - Game Config
 
 ```python
-# Only Python pool (Node removed)
-"python": PoolConfig(
-    target_ready=target_ready,
-    max_ready=target_ready + 1,     # Strict limit
-    idle_timeout=600,                # 10 min
-    scale_down_delay=120,
-    max_warm_age=3600,
-    on_empty="create",
-),
-max_total_sandboxes=target_ready + 3,  # Strict global limit
-max_concurrent_creates=1,               # Serialize creations
+GAME_CONFIG = {
+    GameType.SNAKE: {
+        "image": "python",
+        "path": "snake",
+        "snapshot_id": "snake-python",
+    },
+    GameType.TIC_TAC_TOE: {
+        "image": "python",              # Changed from "node"
+        "path": "tic-tac-toe-python",   # Changed from "tic-tac-toe"
+        "snapshot_id": "tictactoe-python",  # Changed from "tictactoe-node"
+    },
+    GameType.MEMORY: {
+        "image": "python",
+        "path": "memory",
+        "snapshot_id": "memory-python",
+    },
+}
 ```
 
 ---
@@ -306,8 +370,9 @@ max_concurrent_creates=1,               # Serialize creations
 ## Priority Order (UPDATED)
 
 1. **Issue 1 (SDK Bug)** - CRITICAL - Must fix before re-enabling warm pool
-2. **Issue 4 (Games)** - MEDIUM - Test cold starts work
-3. **Issue 3 (SSE)** - LOW - Nice to have
+2. ~~Issue 2 (All Python)~~ - ✅ DONE
+3. ~~Issue 4 (Games)~~ - ✅ DONE
+4. **Issue 3 (SSE)** - LOW - Nice to have
 
 ---
 
@@ -333,7 +398,7 @@ doctl apps create-deployment 93325ad4-ec00-4211-862c-23489ec3e32c
 
 1. **SDK bug fixed** - Pool respects max_ready limit
 2. **Warm pool stable** - Creates exactly target_ready sandboxes, no churn
-3. **All games work** - Snake, Memory, Tic-Tac-Toe playable
+3. ✅ **All games work** - Snake, Memory, Tic-Tac-Toe playable (DONE)
 4. **SSE streaming** (nice to have) - Per-launch logs work
 
 ---
@@ -342,8 +407,19 @@ doctl apps create-deployment 93325ad4-ec00-4211-862c-23489ec3e32c
 
 | File | Purpose |
 |------|---------|
-| `backend/services/cold_service.py` | Pool manager config |
+| `backend/services/cold_service.py` | Pool manager config, game configs |
 | `backend/config.py` | Environment variable defaults |
 | `backend/main.py` | API endpoints |
 | `.do/app.yaml` | App Platform deployment config |
 | **SDK: `sandbox_manager.py`** | **BUG LOCATION - needs debugging** |
+
+---
+
+## Snapshots in Spaces
+
+```
+s3://demo-app-sandbox-python/snapshots/
+├── snake-python.tar.gz
+├── memory-python.tar.gz
+└── tictactoe-python.tar.gz   # NEW - Python version
+```
