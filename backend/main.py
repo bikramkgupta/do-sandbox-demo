@@ -267,13 +267,11 @@ async def get_status():
 
 @app.get("/api/history")
 async def get_history(
-    days: int = Query(default=7, ge=1, le=30),
-    type: str = Query(default=None),
-    limit: int = Query(default=100, ge=1, le=1000),
+    limit: int = Query(default=10, ge=1, le=20),
 ):
-    """Get sandbox run history."""
-    # TODO: Implement database-backed history
-    return {"history": [], "count": 0}
+    """Get recently deleted sandboxes history."""
+    deleted = cold_service.get_deleted_sandboxes(limit)
+    return {"deleted": deleted, "count": len(deleted)}
 
 
 @app.get("/api/stats", response_model=StatsResponse)

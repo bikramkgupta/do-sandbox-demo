@@ -155,6 +155,9 @@ class SandboxService:
         # Orchestrator log for UI transparency (recent events)
         self._orchestrator_logs: list[dict] = []
         self._max_orchestrator_logs = 100
+        # Deleted sandboxes history (in-memory, keeps last 20)
+        self._deleted_sandboxes: list[dict] = []
+        self._max_deleted_sandboxes = 20
 
     def _log_orchestrator(self, message: str, level: str = "info"):
         """Add a message to the orchestrator log."""
@@ -676,6 +679,26 @@ class SandboxService:
         if not runtime:
             return False
 
+        # Calculate total runtime before deletion
+        deleted_at = datetime.utcnow()
+        duration_ms = int((deleted_at - runtime.created_at).total_seconds() * 1000)
+
+        # Save to deleted history
+        deleted_info = {
+            "run_id": run_id_str,
+            "type": runtime.sandbox_type.value,
+            "game": runtime.game.value,
+            "status": "deleted",
+            "bootstrap_ms": runtime.bootstrap_ms,
+            "duration_ms": duration_ms,
+            "created_at": runtime.created_at.isoformat(),
+            "deleted_at": deleted_at.isoformat(),
+            "reason": reason,
+        }
+        self._deleted_sandboxes.insert(0, deleted_info)
+        # Keep only the last N deleted sandboxes
+        self._deleted_sandboxes = self._deleted_sandboxes[:self._max_deleted_sandboxes]
+
         # Log deletion to orchestrator
         self._log_orchestrator(f"Deleting sandbox {run_id_str[:8]} ({runtime.game.value}) - reason: {reason}")
 
@@ -707,6 +730,10 @@ class SandboxService:
     def get_active_sandboxes(self) -> list[SandboxInfo]:
         """Get all active sandboxes."""
         return [runtime.to_info() for runtime in self._active_sandboxes.values()]
+
+    def get_deleted_sandboxes(self, limit: int = 10) -> list[dict]:
+        """Get recently deleted sandboxes history."""
+        return self._deleted_sandboxes[:limit]
 
     async def cleanup_expired(self) -> int:
         """Delete expired sandboxes. Returns count of deleted."""

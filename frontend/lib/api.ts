@@ -119,3 +119,26 @@ export async function getPoolStatus(): Promise<{
   }
   return response.json();
 }
+
+export interface DeletedSandbox {
+  run_id: string;
+  type: string;
+  game: string;
+  status: string;
+  bootstrap_ms?: number;
+  duration_ms?: number;
+  created_at: string;
+  deleted_at: string;
+  reason?: string;
+}
+
+export async function getDeletedSandboxes(limit: number = 10): Promise<{
+  deleted: DeletedSandbox[];
+  count: number;
+}> {
+  const response = await fetch(`${API_BASE}/api/history?limit=${limit}`);
+  if (!response.ok) {
+    throw new Error('Failed to fetch deleted sandboxes');
+  }
+  return response.json();
+}

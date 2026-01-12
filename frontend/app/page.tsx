@@ -17,7 +17,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { useSandbox, useGlobalStatus } from '@/hooks/use-sandbox';
-import { getOrchestratorLogs, getPoolStatus, OrchestratorLog } from '@/lib/api';
+import { getOrchestratorLogs, getPoolStatus, getDeletedSandboxes, OrchestratorLog, DeletedSandbox } from '@/lib/api';
 import { GameType, SandboxType } from '@/lib/types';
 
 const GAMES: { value: GameType; label: string; emoji: string }[] = [
@@ -307,7 +307,7 @@ function CompactLaunchCard({
         <select
           value={selectedGame}
           onChange={(e) => setSelectedGame(e.target.value as GameType)}
-          disabled={isCreating || isRunning}
+          disabled={isCreating}
           className="flex-1 px-3 py-2 bg-do-darker border border-white/10 rounded-lg text-sm text-white focus:border-do-blue focus:outline-none disabled:opacity-50"
         >
           {GAMES.map((game) => (
@@ -322,7 +322,7 @@ function CompactLaunchCard({
             type="checkbox"
             checked={useSnapshot}
             onChange={(e) => setUseSnapshot(e.target.checked)}
-            disabled={isCreating || isRunning}
+            disabled={isCreating}
             className="w-4 h-4 rounded border-gray-600 bg-do-darker text-do-blue focus:ring-do-blue/50"
           />
           <Package className="w-4 h-4 text-do-purple" />
@@ -358,6 +358,23 @@ function CompactLaunchCard({
   );
 }
 
+// Format time remaining
+function formatTimeRemaining(expiresAt: string): string {
+  const remaining = new Date(expiresAt).getTime() - Date.now();
+  if (remaining <= 0) return 'expiring...';
+  const mins = Math.floor(remaining / 60000);
+  const secs = Math.floor((remaining % 60000) / 1000);
+  return `${mins}:${secs.toString().padStart(2, '0')} left`;
+}
+
+// Format duration
+function formatDuration(ms: number): string {
+  const mins = Math.floor(ms / 60000);
+  const secs = Math.floor((ms % 60000) / 1000);
+  if (mins > 0) return `ran ${mins}m ${secs}s`;
+  return `ran ${secs}s`;
+}
+
 // Sandbox List Item
 function SandboxListItem({
   sandbox,
@@ -371,13 +388,22 @@ function SandboxListItem({
     status?: string;
     ingress_url?: string;
     bootstrap_ms?: number;
+    duration_ms?: number;
     expires_at?: string;
   };
   isExpired?: boolean;
   onDelete?: () => void;
 }) {
+  const [, forceUpdate] = useState(0);
   const game = GAMES.find((g) => g.value === sandbox.game);
   const isRunning = sandbox.status === 'running';
+
+  // Update time remaining every second for active sandboxes
+  useEffect(() => {
+    if (isExpired || !sandbox.expires_at) return;
+    const interval = setInterval(() => forceUpdate((n) => n + 1), 1000);
+    return () => clearInterval(interval);
+  }, [isExpired, sandbox.expires_at]);
 
   return (
     <div
@@ -411,11 +437,20 @@ function SandboxListItem({
               {isExpired ? 'deleted' : sandbox.status || 'unknown'}
             </span>
           </div>
-          {sandbox.bootstrap_ms && (
-            <div className="text-xs text-gray-500">
-              {(sandbox.bootstrap_ms / 1000).toFixed(1)}s bootstrap
-            </div>
-          )}
+          <div className="text-xs text-gray-500 flex items-center gap-2">
+            {sandbox.bootstrap_ms && (
+              <span>{(sandbox.bootstrap_ms / 1000).toFixed(1)}s bootstrap</span>
+            )}
+            {!isExpired && sandbox.expires_at && (
+              <span className="text-do-cyan flex items-center gap-1">
+                <Clock className="w-3 h-3" />
+                {formatTimeRemaining(sandbox.expires_at)}
+              </span>
+            )}
+            {isExpired && sandbox.duration_ms && (
+              <span className="text-gray-400">{formatDuration(sandbox.duration_ms)}</span>
+            )}
+          </div>
         </div>
       </div>
 
@@ -447,7 +482,7 @@ function SandboxListItem({
 // Sandbox List Section
 function SandboxList({
   activeSandboxes,
-  expiredSandboxes,
+  deletedSandboxes,
   onDelete,
 }: {
   activeSandboxes: Array<{
@@ -457,16 +492,12 @@ function SandboxList({
     status: string;
     ingress_url?: string;
     bootstrap_ms?: number;
+    expires_at?: string;
   }>;
-  expiredSandboxes: Array<{
-    run_id: string;
-    type: string;
-    game: string;
-    bootstrap_ms?: number;
-  }>;
+  deletedSandboxes: DeletedSandbox[];
   onDelete: (runId: string) => void;
 }) {
-  if (activeSandboxes.length === 0 && expiredSandboxes.length === 0) {
+  if (activeSandboxes.length === 0 && deletedSandboxes.length === 0) {
     return null;
   }
 
@@ -490,13 +521,13 @@ function SandboxList({
         </div>
       )}
 
-      {expiredSandboxes.length > 0 && (
+      {deletedSandboxes.length > 0 && (
         <div>
           <h3 className="text-sm font-medium text-gray-500 mb-3">
-            Recently Deleted ({expiredSandboxes.length})
+            Recently Deleted ({deletedSandboxes.length})
           </h3>
           <div className="space-y-2">
-            {expiredSandboxes.map((sandbox) => (
+            {deletedSandboxes.map((sandbox) => (
               <SandboxListItem
                 key={sandbox.run_id}
                 sandbox={sandbox}
@@ -514,83 +545,33 @@ export default function Home() {
   const { status, refresh } = useGlobalStatus();
   const coldSandbox = useSandbox('cold');
   const warmSandbox = useSandbox('warm');
-  const [expiredSandboxes, setExpiredSandboxes] = useState<Array<{
-    run_id: string;
-    type: string;
-    game: string;
-    bootstrap_ms?: number;
-  }>>([]);
+  const [deletedSandboxes, setDeletedSandboxes] = useState<DeletedSandbox[]>([]);
 
-  // Refresh status periodically
+  // Refresh status and deleted sandboxes periodically
   useEffect(() => {
-    refresh();
-    const interval = setInterval(refresh, 3000);
+    const fetchData = async () => {
+      refresh();
+      try {
+        const data = await getDeletedSandboxes(10);
+        setDeletedSandboxes(data.deleted);
+      } catch (e) {
+        // Silently fail
+      }
+    };
+
+    fetchData();
+    const interval = setInterval(fetchData, 3000);
     return () => clearInterval(interval);
   }, [refresh]);
 
-  // Track when sandboxes expire
-  useEffect(() => {
-    const runId = coldSandbox.runId;
-    if (coldSandbox.status === 'deleted' && runId) {
-      setExpiredSandboxes((prev) => {
-        // Avoid duplicates
-        if (prev.some((s) => s.run_id === runId)) return prev;
-        return [
-          {
-            run_id: runId,
-            type: 'cold',
-            game: 'snake', // TODO: track actual game
-            bootstrap_ms: coldSandbox.bootstrapMs || undefined,
-          },
-          ...prev,
-        ].slice(0, 5); // Keep last 5
-      });
-    }
-  }, [coldSandbox.status, coldSandbox.runId, coldSandbox.bootstrapMs]);
-
-  useEffect(() => {
-    const runId = warmSandbox.runId;
-    if (warmSandbox.status === 'deleted' && runId) {
-      setExpiredSandboxes((prev) => {
-        if (prev.some((s) => s.run_id === runId)) return prev;
-        return [
-          {
-            run_id: runId,
-            type: 'warm',
-            game: 'snake',
-            bootstrap_ms: warmSandbox.bootstrapMs || undefined,
-          },
-          ...prev,
-        ].slice(0, 5);
-      });
-    }
-  }, [warmSandbox.status, warmSandbox.runId, warmSandbox.bootstrapMs]);
-
   const handleDelete = async (runId: string) => {
     try {
-      // Find sandbox info before deletion to add to expired list
-      const sandboxInfo = status?.active?.find((s) => s.run_id === runId);
-
       const { deleteSandbox } = await import('@/lib/api');
       await deleteSandbox(runId);
-
-      // Add to expired list after successful deletion
-      if (sandboxInfo) {
-        setExpiredSandboxes((prev) => {
-          if (prev.some((s) => s.run_id === runId)) return prev;
-          return [
-            {
-              run_id: runId,
-              type: sandboxInfo.type,
-              game: sandboxInfo.game,
-              bootstrap_ms: sandboxInfo.bootstrap_ms,
-            },
-            ...prev,
-          ].slice(0, 5);
-        });
-      }
-
+      // Refresh to update both active and deleted lists
       refresh();
+      const data = await getDeletedSandboxes(10);
+      setDeletedSandboxes(data.deleted);
     } catch (e) {
       console.error('Failed to delete sandbox:', e);
     }
@@ -638,7 +619,7 @@ export default function Home() {
         {/* Sandbox List */}
         <SandboxList
           activeSandboxes={status?.active || []}
-          expiredSandboxes={expiredSandboxes}
+          deletedSandboxes={deletedSandboxes}
           onDelete={handleDelete}
         />
 
