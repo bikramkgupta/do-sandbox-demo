@@ -17,7 +17,7 @@
 
 ---
 
-## Remaining: SDK SandboxManager Bug (BLOCKING WARM POOL)
+## CRITICAL: SDK SandboxManager Bug (BLOCKING WARM POOL)
 
 ### Status: PENDING - Needs SDK Fix
 
@@ -31,13 +31,23 @@ The `do-app-sandbox` SDK's `SandboxManager` creates sandboxes in an infinite loo
 2. **Does not properly track sandboxes** - Metrics fluctuate wildly
 3. **Continuously creates sandboxes** - Even when above target_ready
 
-### Evidence (2026-01-11)
+### Evidence (2026-01-12)
+
+**Runaway creation observed:**
+- Pool grew from 6 → 11 → 13+ sandboxes despite `max_ready=5`
+- `doctl apps list | grep sandbox` showed 9 → 13 apps in seconds
+- Had to delete the entire app to stop the runaway creation
 
 ```
-Pool: ready=3, creating=0  ← Good, at max_ready=3
-Pool: ready=3, creating=2  ← BUG! Creating when already at max!
-Pool: ready=1, creating=1  ← Lost track of sandboxes!
-Pool: ready=5, creating=1  ← ready=5 exceeds max_ready=3!
+Pool: 6 / 3 +1   ← ready=6 exceeds max_ready!
+Pool: 11 / 3 +2  ← Still creating despite being WAY over limit!
+```
+
+**Environment was correctly configured:**
+```
+WARM_POOL_TARGET_READY=3
+WARM_POOL_MAX_READY=5
+WARM_POOL_MAX_CONCURRENT_CREATES=1
 ```
 
 ### SDK Location
