@@ -53,18 +53,16 @@ services:
       - key: MAX_RUNS_PER_HOUR
         scope: RUN_TIME
         value: "25"
-      # Warm pool settings - DISABLED due to SDK bug causing infinite sandbox creation
-      # SDK's SandboxManager doesn't respect max_ready limit and keeps creating sandboxes
-      # Re-enable once SDK is fixed
+      # Warm pool settings - requires do-app-sandbox>=0.2.1
       - key: WARM_POOL_ENABLED
         scope: RUN_TIME
-        value: "false"
+        value: "true"
       - key: WARM_POOL_TARGET_READY
         scope: RUN_TIME
-        value: "2"
+        value: "3"
       - key: WARM_POOL_MAX_READY
         scope: RUN_TIME
-        value: "3"
+        value: "5"
       - key: WARM_POOL_IDLE_TIMEOUT
         scope: RUN_TIME
         value: "600"

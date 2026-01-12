@@ -89,7 +89,51 @@ This clones the games repo and uploads tar.gz archives to your Spaces bucket.
 - **Frontend**: Next.js 14, TypeScript, Tailwind CSS
 - **Backend**: FastAPI, Python 3.12, SSE-Starlette
 - **Database**: PostgreSQL 16
-- **SDK**: do-app-sandbox
+- **SDK**: do-app-sandbox (>=0.2.1)
+
+## Deployment
+
+### GitHub Actions (Recommended)
+
+Deployment is automated via GitHub Actions. Push to `main` or trigger manually:
+
+1. **Automatic**: Push to `main` branch triggers deployment
+2. **Manual**: Go to Actions → "Deploy to App Platform" → "Run workflow"
+
+### Required GitHub Secrets
+
+Configure these in your repository settings (Settings → Secrets and variables → Actions):
+
+| Secret | Description |
+|--------|-------------|
+| `DIGITALOCEAN_ACCESS_TOKEN` | DO API token for deployment |
+| `DIGITALOCEAN_TOKEN` | DO API token for sandbox SDK |
+| `SPACES_BUCKET` | Spaces bucket name |
+| `SPACES_REGION` | Spaces region (e.g., `syd1`) |
+| `SPACES_ACCESS_KEY` | Spaces access key |
+| `SPACES_SECRET_KEY` | Spaces secret key |
+
+### Manual Deployment
+
+```bash
+# Create deployment (uses .do/app.yaml)
+doctl apps create-deployment <APP_ID>
+
+# Or update app spec and deploy
+doctl apps update <APP_ID> --spec .do/app.yaml
+```
+
+### App Configuration
+
+The app spec is located at `.do/app.yaml`. Key settings:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `WARM_POOL_ENABLED` | `true` | Enable/disable warm sandbox pool |
+| `WARM_POOL_TARGET_READY` | `2` | Target sandboxes in pool |
+| `WARM_POOL_MAX_READY` | `3` | Maximum sandboxes in pool |
+| `MAX_CONCURRENT_COLD` | `3` | Max concurrent cold starts |
+| `MAX_RUNS_PER_HOUR` | `25` | Rate limit per hour |
 
 ## License
 
