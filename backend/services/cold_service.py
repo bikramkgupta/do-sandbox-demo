@@ -228,7 +228,8 @@ class SandboxService:
                         idle_timeout=600,  # 10 min idle before scale-down (was 120s causing churn)
                         scale_down_delay=120,  # Slow scale-down: 1 sandbox every 2 min
                         cooldown_after_acquire=300,  # Pause scale-down for 5 min after acquire
-                        max_warm_age=3600,  # Cycle sandboxes after 1 hour (was 30 min)
+                        max_warm_age=86400 * 365,  # Effectively disable age cycling (App Platform manages containers)
+                        health_check_interval=0,  # Disable SDK health checks (App Platform handles this)
                         on_empty="create",  # Fallback to cold start if pool empty
                         create_retries=2,
                         create_retry_delay=10,
@@ -247,7 +248,7 @@ class SandboxService:
             await self._pool_manager.start()
             self._log_orchestrator(
                 f"Warm pool started: target={target_ready}, max={target_ready + 1}, "
-                f"max_creates=1, idle_timeout=600s (Python only, Node will cold-start)"
+                f"max_creates=1, idle_timeout=600s, no cycling, no health checks (Python only)"
             )
 
             # IMPORTANT: Do NOT call warm_up() proactively
@@ -404,7 +405,8 @@ class SandboxService:
 
                 try:
                     # Acquire from pool (should be instant if pool is warm)
-                    sandbox = await self._pool_manager.acquire(image=game_config["image"])
+                    # Pass timeout=120 so cold fallback doesn't take 600s default
+                    sandbox = await self._pool_manager.acquire(image=game_config["image"], timeout=120)
                     bootstrap_ms = int((time.time() - bootstrap_start) * 1000)
                     self._log_orchestrator(f"Pool acquisition: {bootstrap_ms}ms (pool hit)")
                 except Exception as pool_error:
