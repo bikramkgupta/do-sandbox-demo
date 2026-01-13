@@ -229,7 +229,6 @@ class SandboxService:
                         scale_down_delay=120,  # Slow scale-down: 1 sandbox every 2 min
                         cooldown_after_acquire=300,  # Pause scale-down for 5 min after acquire
                         max_warm_age=86400 * 365,  # Effectively disable age cycling (App Platform manages containers)
-                        health_check_interval=0,  # Disable SDK health checks (App Platform handles this)
                         on_empty="create",  # Fallback to cold start if pool empty
                         create_retries=2,
                         create_retry_delay=10,
