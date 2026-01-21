@@ -28,6 +28,7 @@ from models.schemas import (
 )
 from services.rate_limiter import rate_limiter, RateLimitError
 from services.cold_service import cold_service, sandbox_service
+from services.snapshot_builder import build_snapshots_in_sandbox
 
 
 # Background cleanup task - only affects user-launched sandboxes, not SDK pool
@@ -50,6 +51,20 @@ async def lifespan(app: FastAPI):
     missing = config.validate()
     if missing:
         print(f"WARNING: Missing configuration: {missing}")
+
+    # Rebuild snapshots if enabled (builds inside a sandbox for correct arch)
+    if config.REBUILD_SNAPSHOTS:
+        print("REBUILD_SNAPSHOTS enabled - building snapshots in sandbox...")
+        try:
+            success = await build_snapshots_in_sandbox()
+            if success:
+                print("Snapshots rebuilt successfully")
+            else:
+                print("WARNING: Snapshot rebuild had failures, continuing with existing snapshots")
+        except Exception as e:
+            print(f"WARNING: Snapshot rebuild failed: {e}, continuing with existing snapshots")
+    else:
+        print("REBUILD_SNAPSHOTS disabled - using existing snapshots")
 
     # Start background cleanup task
     cleanup = asyncio.create_task(cleanup_task())

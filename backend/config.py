@@ -34,6 +34,9 @@ class Config:
     SANDBOX_MAX_LIFETIME_MINUTES: int = int(os.getenv("SANDBOX_MAX_LIFETIME_MINUTES", "6"))
     CLEANUP_INTERVAL_SECONDS: int = int(os.getenv("CLEANUP_INTERVAL_SECONDS", "30"))
 
+    # Snapshot rebuild on startup
+    REBUILD_SNAPSHOTS: bool = os.getenv("REBUILD_SNAPSHOTS", "false").lower() == "true"
+
     # Warm pool settings
     WARM_POOL_ENABLED: bool = os.getenv("WARM_POOL_ENABLED", "false").lower() == "true"
     WARM_POOL_TARGET_READY: int = int(os.getenv("WARM_POOL_TARGET_READY", "2"))

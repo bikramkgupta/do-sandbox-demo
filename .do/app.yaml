@@ -69,6 +69,10 @@ services:
       - key: WARM_POOL_MAX_CONCURRENT_CREATES
         scope: RUN_TIME
         value: "1"
+      # Snapshot rebuild on startup (builds in sandbox for correct arch)
+      - key: REBUILD_SNAPSHOTS
+        scope: RUN_TIME
+        value: "true"
       # Sandbox lifetime settings
       - key: SANDBOX_MIN_LIFETIME_MINUTES
         scope: RUN_TIME

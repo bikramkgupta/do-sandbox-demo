@@ -65,15 +65,34 @@ Interactive demo showcasing DigitalOcean App Platform Sandbox capabilities - com
 
 Games are hosted at: https://github.com/bikramkgupta/do-sandbox-games
 
-## Creating Snapshots
+## Snapshots
 
-To create/update snapshots in Spaces:
+Snapshots are tar.gz archives containing game source code **and pre-installed dependencies**. This eliminates the need for `pip install` at runtime, making sandbox deployment faster.
+
+### Automatic Rebuild (Recommended)
+
+Snapshots are automatically rebuilt on app startup when `REBUILD_SNAPSHOTS=true` (default). This:
+
+1. Creates a temporary sandbox (ensures correct x86 architecture)
+2. Clones the games repo inside the sandbox
+3. Runs `pip install --target` for each game
+4. Creates tar.gz with dependencies included
+5. Uploads to Spaces
+6. Deletes the builder sandbox
+
+This ensures snapshots are always built with the correct architecture matching the runtime environment.
+
+**Note**: First deploy takes ~2-3 minutes longer due to snapshot building. Set `REBUILD_SNAPSHOTS=false` after initial deploy if you don't need to rebuild on every restart.
+
+### Manual Rebuild (Alternative)
+
+To manually rebuild snapshots from any machine with Python/git:
 
 ```bash
 python scripts/create_snapshots.py
 ```
 
-This clones the games repo and uploads tar.gz archives to your Spaces bucket.
+**Warning**: Running locally on ARM Mac will create snapshots with ARM-compiled packages, which may not work on x86 Linux sandboxes. Use the automatic rebuild method for production.
 
 ## API Endpoints
 
@@ -129,6 +148,7 @@ The app spec is located at `.do/app.yaml`. Key settings:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
+| `REBUILD_SNAPSHOTS` | `true` | Rebuild snapshots on startup (in sandbox) |
 | `WARM_POOL_ENABLED` | `true` | Enable/disable warm sandbox pool |
 | `WARM_POOL_TARGET_READY` | `2` | Target sandboxes in pool |
 | `WARM_POOL_MAX_READY` | `3` | Maximum sandboxes in pool |

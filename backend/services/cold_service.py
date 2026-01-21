@@ -536,8 +536,12 @@ class SandboxService:
             await self.delete(runtime.run_id)
 
     async def _deploy_with_snapshot(self, runtime: SandboxRuntime, queue, game_config: dict) -> None:
-        """Deploy game by restoring from snapshot."""
-        await self._emit(queue, runtime.add_log("Restoring from snapshot..."))
+        """Deploy game by restoring from snapshot.
+
+        Snapshots include pre-installed dependencies (bundled via pip --target),
+        so no pip install is needed after extraction.
+        """
+        await self._emit(queue, runtime.add_log("Restoring from snapshot (includes dependencies)..."))
 
         snapshot_id = game_config["snapshot_id"]
         game_path = game_config["path"]
@@ -569,21 +573,10 @@ class SandboxService:
                     await self._emit(queue, runtime.add_log("Snapshot restored successfully"))
                     self._log_orchestrator(f"Snapshot extracted successfully")
 
-                    # Still need to install deps (snapshots contain code, not installed deps)
-                    await self._emit(queue, runtime.add_log("Installing dependencies..."))
-                    self._log_orchestrator(f"Installing dependencies ({game_config['install']})")
-                    install_cmd = game_config["install"]
-                    result = await exec_with_retry(
-                        runtime.sandbox,
-                        f"cd /workspace/{game_path} && {install_cmd}",
-                        timeout=120
-                    )
-                    if not result.success:
-                        await self._emit(queue, runtime.add_log(f"Warning: {result.stderr}"))
-                        self._log_orchestrator(f"Dependency warning: {result.stderr[:100]}", level="warning")
-
-                    await self._emit(queue, runtime.add_log("Dependencies installed"))
-                    self._log_orchestrator(f"Dependencies installed successfully")
+                    # Dependencies are pre-installed in the snapshot (bundled via pip --target)
+                    # No need to run pip install - the packages are already in the game directory
+                    await self._emit(queue, runtime.add_log("Dependencies ready (bundled in snapshot)"))
+                    self._log_orchestrator(f"Dependencies ready (pre-bundled)")
                     return
                 else:
                     await self._emit(queue, runtime.add_log(f"Extract failed: {result.stderr}"))
