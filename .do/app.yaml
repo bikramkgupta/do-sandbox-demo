@@ -5,7 +5,7 @@ services:
   # FastAPI Backend
   - name: backend
     github:
-      repo: bikramkgupta/do-sandbox-demo
+      repo: digitalocean-labs/do-sandbox-demo
       branch: main
       deploy_on_push: false
     source_dir: backend
@@ -84,7 +84,7 @@ services:
   # Next.js Frontend
   - name: frontend
     github:
-      repo: bikramkgupta/do-sandbox-demo
+      repo: digitalocean-labs/do-sandbox-demo
       branch: main
       deploy_on_push: false
     source_dir: frontend
