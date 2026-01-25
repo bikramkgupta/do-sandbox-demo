@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 GAMES = [
     ("snake", "snake-python"),
     ("memory", "memory-python"),
-    ("tic-tac-toe", "tictactoe-python"),
+    ("tic-tac-toe-python", "tictactoe-python"),
 ]
 
 GAMES_REPO = "https://github.com/bikramkgupta/do-sandbox-games.git"

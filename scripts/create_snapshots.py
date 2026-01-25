@@ -32,7 +32,7 @@ GAMES_REPO = "https://github.com/bikramkgupta/do-sandbox-games.git"
 # runtime type: "python" or "node"
 GAMES = {
     "snake": ("snake-python", "python"),
-    "tic-tac-toe": ("tictactoe-python", "python"),  # Updated to Python version
+    "tic-tac-toe-python": ("tictactoe-python", "python"),
     "memory": ("memory-python", "python"),
 }
 
