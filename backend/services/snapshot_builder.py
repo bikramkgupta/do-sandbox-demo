@@ -4,6 +4,7 @@ import logging
 from typing import Optional
 
 from do_app_sandbox import Sandbox, SandboxMode
+from do_app_sandbox.exceptions import ServiceConnectionError
 
 from config import config
 
@@ -19,13 +20,39 @@ GAMES = [
 GAMES_REPO = "https://github.com/bikramkgupta/do-sandbox-games.git"
 
 
-async def exec_in_sandbox(sandbox: Sandbox, command: str, timeout: int = 120) -> tuple[bool, str]:
-    """Execute command in sandbox, return (success, output)."""
-    try:
-        result = await asyncio.to_thread(sandbox.exec, command, timeout=timeout)
-        return result.success, result.stdout if result.success else result.stderr
-    except Exception as e:
-        return False, str(e)
+async def exec_in_sandbox(
+    sandbox: Sandbox,
+    command: str,
+    timeout: int = 120,
+    max_retries: int = 5,
+    retry_delay: int = 5,
+) -> tuple[bool, str]:
+    """Execute command in sandbox with retry, return (success, output)."""
+    last_error: Optional[Exception] = None
+    for attempt in range(max_retries):
+        try:
+            result = await asyncio.to_thread(sandbox.exec, command, timeout=timeout)
+            return result.success, result.stdout if result.success else result.stderr
+        except (ServiceConnectionError, Exception) as e:
+            last_error = e
+            error_msg = str(e)
+            retryable = (
+                "Name or service not known" in error_msg
+                or "Failed to connect to sandbox" in error_msg
+                or "Connection" in error_msg
+            )
+            if retryable and attempt < max_retries - 1:
+                logger.warning(
+                    "Sandbox exec failed (%s), retrying in %ss (attempt %s/%s)",
+                    error_msg,
+                    retry_delay,
+                    attempt + 1,
+                    max_retries,
+                )
+                await asyncio.sleep(retry_delay)
+                continue
+            return False, error_msg
+    return False, str(last_error) if last_error else "Unknown error"
 
 
 async def build_snapshots_in_sandbox() -> bool:
